@@ -97,8 +97,15 @@ Current feature set, all owner-only except where noted:
   menu: Pin/Unpin, Rename (edits the title IN THE ROW itself,
   Explorer-F2-style, not a dialog), Re-upload… (`'html'` decks only —
   replaces the deck's stored bytes wholesale via the same PATCH endpoint
-  create uses), Access (a drill-down submenu), Delete. The menu is a
-  body-appended, fixed-position panel, deliberately not nested inside the
+  create uses), Download (`'html'` decks only — `/d/:id/download`; a
+  `'bento'` deck's editor already covers "get the content back out," so
+  this would be redundant there), Access (a drill-down submenu),
+  Password…, Project (a drill-down submenu — the row's own label always
+  reads "Project," never the currently assigned project's name, which was
+  tried and read as "this row IS the project" rather than "click to
+  change it"; the current one shows as a checkmark one level down, same
+  as Access), Delete. The menu is a body-appended, fixed-position panel,
+  deliberately not nested inside the
   scrolling sidebar list — see this file's own hard-won lesson #10 below on
   why a floating child inside an `overflow-y:auto` container gets silently
   clipped. **Pin** (`migrations/0006_pinned.sql`) sorts a deck to the top

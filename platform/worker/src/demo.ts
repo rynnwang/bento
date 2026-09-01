@@ -572,6 +572,7 @@ ${PAGE_STYLES}
     <div class="preview-panel" id="previewPanel" hidden>
       <div class="preview-header">
         <span class="preview-title" id="previewTitle"></span>
+        <a id="previewDownload" href="#" download hidden>Download</a>
         <a id="previewOpenTab" href="#" target="_blank" rel="noopener">Open in new tab ↗</a>
         <button type="button" id="previewClose">✕ Close</button>
       </div>
@@ -662,6 +663,7 @@ const ICONS = {
   check: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
   pin: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 1 1 0 0 0 0-2H8a1 1 0 0 0 0 2 1 1 0 0 1 1 1Z"/></svg>',
   upload: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/></svg>',
+  download: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>',
   folder: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>',
   plus: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>',
   key: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/></svg>',
@@ -1100,19 +1102,34 @@ function openDeckMenu(id, x, y) {
     const reuploadItem = info.kind === 'html'
       ? '<button type="button" class="ctx-item" data-a="reupload">' + iconSpan(ICONS.upload) + '<span>Re-upload…</span></button>'
       : ''
-    const currentProject = info.projectId && projectIndex[info.projectId] ? projectIndex[info.projectId] : null
+    // 'html' decks only — a chat AI's raw file, so "download" is how you get
+    // that exact original file back out for use somewhere else (Bento decks
+    // are always editable/re-exportable from the live editor itself, so
+    // this item would be redundant noise on every other deck's menu).
+    const downloadItem = info.kind === 'html'
+      ? '<button type="button" class="ctx-item" data-a="download">' + iconSpan(ICONS.download) + '<span>Download</span></button>'
+      : ''
     menu.innerHTML =
       '<button type="button" class="ctx-item" data-a="pin">' + iconSpan(ICONS.pin) + '<span>' + (info.pinned ? 'Unpin' : 'Pin') + '</span></button>' +
       '<button type="button" class="ctx-item" data-a="rename">' + iconSpan(ICONS.pencil) + '<span>Rename</span></button>' +
       reuploadItem +
+      downloadItem +
       '<button type="button" class="ctx-item" data-a="access">' + iconSpan(ICONS.eye) + '<span>Access</span>' + iconSpan(ICONS.chevronRight, 'ctx-right') + '</button>' +
       '<button type="button" class="ctx-item" data-a="password">' + iconSpan(ICONS.key) + '<span>' + (info.hasPassword ? 'Password…' : 'Set password…') + '</span></button>' +
-      '<button type="button" class="ctx-item" data-a="project">' + iconSpan(ICONS.folder) + '<span>' + (currentProject ? esc(currentProject.name) : 'Project') + '</span>' + iconSpan(ICONS.chevronRight, 'ctx-right') + '</button>' +
+      // Always the plain category label "Project" — never the currently
+      // assigned project's own name (that was tried and read as confusing:
+      // it looked like the ROW itself was the project, not a way to change
+      // it). Which project (if any) is current shows as a checkmark one
+      // level down, in renderProject — same pattern Access already uses.
+      '<button type="button" class="ctx-item" data-a="project">' + iconSpan(ICONS.folder) + '<span>Project</span>' + iconSpan(ICONS.chevronRight, 'ctx-right') + '</button>' +
       '<div class="ctx-sep"></div>' +
       '<button type="button" class="ctx-item danger" data-a="delete">' + iconSpan(ICONS.trash) + '<span>Delete…</span></button>'
     menu.querySelector('[data-a="pin"]').onclick = () => { closeMenu(); togglePin(id, info) }
     menu.querySelector('[data-a="rename"]').onclick = () => { closeMenu(); startInlineRename(id, info) }
-    if (info.kind === 'html') menu.querySelector('[data-a="reupload"]').onclick = () => { closeMenu(); reuploadHtmlDeck(id, info) }
+    if (info.kind === 'html') {
+      menu.querySelector('[data-a="reupload"]').onclick = () => { closeMenu(); reuploadHtmlDeck(id, info) }
+      menu.querySelector('[data-a="download"]').onclick = () => { closeMenu(); window.open('/d/' + id + '/download', '_blank', 'noopener') }
+    }
     menu.querySelector('[data-a="access"]').onclick = renderAccess
     menu.querySelector('[data-a="password"]').onclick = () => { closeMenu(); openPasswordModal(id, info) }
     menu.querySelector('[data-a="project"]').onclick = renderProject
@@ -1290,10 +1307,16 @@ const wizardWrap = document.getElementById('wizardWrap')
 const previewFrame = document.getElementById('previewFrame')
 const previewTitle = document.getElementById('previewTitle')
 const previewOpenTab = document.getElementById('previewOpenTab')
+const previewDownload = document.getElementById('previewDownload')
 
 function showPreview(id, title, href) {
   previewTitle.textContent = title || 'Untitled deck'
   previewOpenTab.href = href
+  // 'html' decks only — see the same item in the deck's ⚙️ menu for why
+  // (this is the one edit-copy-out path an opaque uploaded file has).
+  const isHtml = deckIndex[id]?.kind === 'html'
+  previewDownload.hidden = !isHtml
+  if (isHtml) previewDownload.href = '/d/' + id + '/download'
   previewFrame.src = href
   wizardWrap.hidden = true
   previewPanel.hidden = false
