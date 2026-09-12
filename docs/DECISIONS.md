@@ -359,6 +359,612 @@ outline-schema compiler (chat-AI structured output → good Bento) and the
 paste/review/placeholder-upload UI are follow-up PRs; `POST /api/decks`
 accepts a complete doc JSON directly for now. Full rationale and the
 deferred-items list: `platform/README.md` "Known gaps".
+## 2026-08-19 — Cross-app embedding: static render + source, never a second renderer
+
+**Decision.** One block/element shape, `bento/embed`, shared by every app in both
+directions (a Dash chart in a Type contract, a Type doc in a Spaces page, either
+in a Slides deck):
+
+```
+{ kind:'embed', app:'bento/dash', doc:{…}|'asset:…', view:'<svg…>', w, h, caption? }
+```
+
+Three tiers, and the ORDER is the design. `view` — a static render — is always
+present, so the embed paints in any app with zero extra code, thumbnails, and
+prints. `doc` — the source — is always present, so it round-trips: open in Dash,
+edit, come back. A live sandboxed iframe is OPT-IN per embed, never the default.
+
+**Why.** Embedding the other app's renderer means shipping every renderer in
+every file to cover the matrix (each is 100KB+) and living with version skew
+between the embedded copy and the real app. The static render is what makes a
+self-contained file self-contained; the source is what stops it being a
+screenshot. A Bento file IS a runnable page, so `srcdoc` genuinely works for a
+live chart — but it is opt-in because most embeds do not need it and every one
+of them would cost the file a full shell.
+
+Constraints this inherits, not new ones: format additivity (PLATFORM §3) means
+an app that does not know `bento/dash` still shows the render plus an "open
+in…" affordance, never a hole; the splice contract (§2) means the payload can
+never carry a bare `</script>`, so it is escaped like `#bento-doc` or stored as
+an asset; and since every document is untrusted input, a live iframe is
+sandboxed with no same-origin. Default to data + render — embedding a 500KB
+shell per chart is how a contract becomes 3MB.
+
+**Status.** The SHAPE is settled here so the apps do not each invent one. The
+shared definition belongs in the kernel and is therefore a serialized kernel
+change of its own (PARALLEL-WORK §1): it has not been made. bento/type
+implements the consumer side in its own app zone against this shape, so the
+kernel lift is a move, not a redesign.
+
+**Pointers.** `type/src/embed.ts`, `docs/PLATFORM.md` §2–§3.
+
+---
+
+## 2026-08-24 — The tree moved to `home/`, and the identifiers moved with it
+
+**Decision.** `tray/` is now `home/`, `applicationId` and
+`PRODUCT_BUNDLE_IDENTIFIER` are `page.bento.home`, and the update channel is
+`https://bento.page/releases/home/manifest.json`. This supersedes the scope
+paragraph and the bundle-identifier bullet in the rename entry above.
+
+**Why the earlier decision was right when it was made, and wrong to keep.** It
+was written while `tray/ios` (#315) and the Android work were both open in
+`tray/`; moving the tree under them would have turned two mergeable branches
+into conflict resolution. That was a real cost and a correct call at the time.
+Both landed, and the reason expired.
+
+The bundle-identifier bullet expired differently. Its argument was explicitly
+conditional — changing the id "creates a different one that cannot update the
+installed copy". There was no installed copy, no App Store Connect record and no
+Play listing. Those three facts are what made it free, and all three stop being
+true at first publish. **This was the last moment the identifiers could move.**
+
+**What did NOT move, and why the line is there.** Rename what the outside world
+sees or what becomes permanent on publish; leave what is internal and guarded:
+
+- **The IndexedDB name stays `bento-tray`** (`home/webext/src/db.js`).
+  `scripts/test-webext-background.ts` asserts it — a deliberate guard against
+  silently orphaning every stored grant. Nobody outside the extension ever sees
+  it, so renaming it would have meant editing a gate to let a cosmetic change
+  through.
+- **`bento-tray://` (iOS) and `.bento-tray.invalid` (Android)** stay. They are
+  per-document origins, settled in their own entries, and invisible.
+
+**The cost, stated.** Every path reference moved: 18 files outside the tree, 35
+inside it, plus the Kotlin package `page.bento.tray` → `page.bento.home` and the
+`tray-icon`/`tray-logo`/`ic_tray_mark` assets. That churn is what the original
+entry warned about, and it was the price of not carrying a dead name forever.
+## 2026-08-25 — The tray hosts are called `bento/home`
+
+**Decision.** All three hosts are named **`bento/home`** — lowercase, with the
+slash, set like `bento/slides`. **Never "Bento Home"**, in any casing, in any
+surface a user reads. This supersedes the naming half of the 2026-07-26 entry
+below, which called the iOS app `bento/tray`.
+
+**Why `home`.** It is not a component that needs distinguishing from the brand —
+it is where documents live and where new ones start, on every host. The suite
+convention is `bento/<what you get>`, and what you get is your documents.
+
+**Why the qualifier route was abandoned, so it is not tried again.** The
+alternative was a distinguishing second word, and every candidate died to a live
+collision: **box** → BentoBox (and "bento box" is the literal object), **desk** →
+Addit's furniture line, **works** → Apple's iWork, **keep** → Google Keep. That
+is four independent attempts failing the same way, which is the signal that the
+premise was wrong rather than the words: the front door does not need a
+qualifier, because it is not one thing among several.
+
+**Scope: the PRODUCT is renamed, not the tree.** Directories stay `tray/ios`,
+`tray/android`, `tray/webext`, and `tray/bridge.js` keeps its name. Renaming
+paths would churn every import, every doc link and every open branch for no
+reader's benefit — the name people see is not the name the repo files it under.
+
+**What must NOT change, on any host:**
+
+- **The bundle identifier.** `page.bento.tray` on iOS, and its Android
+  counterpart. To the OS and the store it IS the app: changing it does not rename
+  the app, it creates a different one that cannot update the installed copy.
+- **`PRODUCT_NAME` / `CFBundleName`** (iOS). They name the executable and the
+  bundle, not the label. `CFBundleDisplayName` is the label, and it is the only
+  key the rename touches.
+- **The App Store listing name.** Per 2026-07-24, `/` is a mark and never a
+  stored name, and store names are stored. The listing keeps a slashless form;
+  the on-device label does not. Those are separate fields — see the note on the
+  2026-07-26 entry for why that pair is not a contradiction.
+
+`bento/home` is 10 characters, which fits the iOS home-screen label without
+truncation. (`bento/tray` was 10 too, so this was not at risk, but it is the
+constraint any future rename has to clear.)
+
+**Where it landed.** `tray/webext` first, in PR #360 / `50d1c40` — read that as
+the precedent for which strings change. `tray/ios` in PR #315: the display name,
+the search screen's lockup, and the mark's `aria-label`. `tray/android` follows.
+
+Screen readers get the spoken form, not the mark: `aria-label` and
+`accessibilityLabel` say "bento home", because a slash is read out as
+punctuation. Visible text keeps the slash, and only the search screen can colour
+it — the home-screen label, the browser title and the Browse folder are system
+chrome drawn as plain text.
+
+**One practical note for the listing, since it is cheap to record and expensive
+to rediscover:** App Store screenshots need documents that have been **saved at
+least once**. A preview is only written on save, so an unsaved document
+photographs as a "Not saved yet" placeholder — a whole screenshot set can be shot
+and only later found to be showing empty cards.
+
+---
+
+## 2026-08-23 — The web demo gates on RETURN, not on save
+
+Someone works at `https://bento.page/slides/`, saves, comes back later and gets
+a fresh starter, because a never-saved deck stays dormant by design. It reads
+as lost work. It is not — the file is on disk — but nothing on screen says so,
+and two things genuinely do not survive: version history and recovery live in
+IndexedDB keyed to the `bento.page` ORIGIN and do not follow the file to
+`file://`, and neither does the session.
+
+**Blocking straight after the save was considered and rejected.** Once an FSA
+handle exists the editor silently rewrites the real file every 2.5s
+(`writeUpdatedFile`), so that tab is a working session writing to disk on every
+edit; interrupting it would sever something that is functioning and lose
+whatever was typed since the last write. The confusion happens on the NEXT
+visit, so that is where the gate goes. **"Start a new deck anyway" is always
+present** — some visitors do want a fresh one, and some cannot install
+anything.
+
+**Availability gating is required from day one, not added later.** The offer is
+`hasFsAccess()` × `hostCan('write')` × *which host actually has a release*.
+Hardcoding "install the extension" would tell an Android user to install a
+Chrome extension. `HOST_AVAILABLE` in `kernel/src/returngate.ts` carries that,
+and `scripts/test-return-gate.ts` pins both states — that the mobile rows say
+"keep the file" today, and that they become real offers the day the flag flips,
+so the flag is wired rather than decorative.
+
+**Capability decides what to SAY; the platform guess decides only which LINK.**
+`hasFsAccess()` is a real feature test, UA sniffing is a guess. A browser that
+gains the API is handled correctly on the day it ships with no change here. For
+Safari/Firefox desktop the honest answer is a different browser, not a pitch
+for an extension that cannot help them.
+
+State is viewer-scoped `localStorage`, never in the document — the same rule
+locale, theme and reduced motion follow. A deck carrying it would tell everyone
+you sent it to that you had once saved something.
+
+In `kernel/`, not `slides/`: Spaces, Dash and Type have the identical problem
+and would each grow their own copy. The kernel owns the remembering and the
+policy; the words and the markup are the app's. Spec (gitignored):
+`working/team/handoffs/handover-web-demo-return-gate.md`, from the `tray-views` session.
+
+NOT done here, and worth weighing first: making **Download** the primary action
+on the landing page (it is currently `btn primary` on "Try it in your browser")
+would avoid the situation for most people and costs nothing. That is a site
+change, not an app one.
+## 2026-08-23 — Sharing a space is a DERIVED document, and the sharer stays the owner
+
+bento/spaces' "Invite someone…" was `saveAs('copy')`, which serializes
+`store.doc`. `collab.ownerPriv` rides in that document and is the room's ROOT
+key — it signs writes and it signs revocations — so everyone invited to a space
+received the power to remove the person who invited them. Measured on the
+branch: the bytes that button wrote contained `ownerPriv` in full, and nothing
+about the copy looked wrong.
+
+**Every share copy is now derived, never the open document.**
+`spaces/src/share.ts` is the one place that says what a copy may carry:
+
+  invite     room + read key + owner PUBLIC key + an owner-signed INVITE
+             (a delegation keypair). Revocable per device, and per invite.
+  view-only  room + read key + public keys, and NO private half at all.
+  anything   no `collab` block, by dropping it whole — a template, a page
+  else       extract, the JSON on the clipboard.
+
+The stripper DELETES rather than rebuilds, so a private field added to
+`CollabCreds` later is covered without anyone acting. That is the same
+derive-by-removing rule `docForExport` already follows, and the two are NOT the
+same case: the clipboard copy must carry no capability, an invite must carry
+exactly one. Do not merge them.
+
+NO RELAY CHANGE WAS NEEDED OR MADE. v2 rooms, the owner → invite → member
+chain, per-socket key pinning and `rev.${pub}` are already deployed and already
+verified by the worker (docs/collab-design.md, "Phase 1 wire format"); this app
+was simply not using them. A new client that DEPENDS on relay behaviour still
+has to be sequenced after a relay deploy — that rule is unchanged and did not
+bind here.
+
+**Read-only is the relay's, the lock is a courtesy.** A view-only copy holds no
+signing key, so its socket presents no `?w=` and the relay stores and fans out
+nothing it sends. `main.ts` also opens it locked (`collab.role === 'reader'` →
+`store.readOnly`) with a banner, which is a THIRD reason to lock alongside
+`doc.readonly` (a sealed reading copy, no session) and `frozen` (a file this
+build does not understand). Only this one keeps receiving.
+
+**Five connection states, not two, and they must be repainted.** offline /
+view-only / live / connecting / off. Measured in a browser against the live
+relay: the button read "Connecting…" while the panel two inches below it read
+"Live — 1 connected". Both call the same `state()`; the panel is rebuilt on
+every open and the button was painted once at boot, because `onPeersChanged`
+was the only thing calling `sync()` — and in a room where nobody has arrived
+yet, that never fires. The transport's `onStatus` now drives it. Honest states
+are worth nothing if they are painted once.
+
+**Wording is lifted from bento/slides wherever the English string exists** —
+24 of the 31 new strings, including every sharing tooltip. Two apps must not
+describe one guarantee in two ways, and a reworded sentence costs eight fresh
+translations to say the same thing. The seven that were adapted say "space"
+where slides says "deck". (Noted in passing, not fixed here: the slides
+catalogs give "Editor copy saved — recipients join live with edit access" the
+translation of the ROLE word "Editor" in seven of eight locales. The spaces
+catalogs carry the correct sentence for that key.)
+
+Pinned by `scripts/test-spaces-invite.ts` — real WebCrypto keys, real
+functions, asserting on the bytes: the owner private key appears nowhere in an
+invite (the whole serialization is scanned, not the field), the owner's
+signature over the invite verifies the way the relay verifies it, and a member
+copy cannot mint invites. `scripts/test-export-secrets.ts` carries the cheap
+half, so a new button cannot route around the first rig.
+
+
+---
+
+## 2026-08-22 — The starter space is a release gate, not a document somebody updates when they remember
+
+`spaces/src/starter.ts` had been written once and left. Everything that shipped
+after it — tables, clips, link cards, comments, calculating lines, daily notes,
+page width, export-a-page, subtree import, the mark palette with its colours,
+live collaboration and presence, the properties panel — was absent from the one
+document every new user reads first, and its "Sharing & limits" page still said
+live collaboration was coming, months after it arrived. A starter that silent is
+not neutral: **a feature the starter does not demonstrate is a feature the
+starter denies**, and the tour was denying about half the app.
+
+So the doctrine is now ASSERTED rather than remembered. `scripts/test-spaces-agent.ts`
+structurally requires the starter to carry a table, a clip, a link card, an
+`asset:` picture, a page-link card, a callout, a FOLDED toggle, a calculating
+line, a palette colour, a comment thread, an archived page, a journal home and a
+page that sets its own width — plus determinism (two calls, byte-identical: ids
+here are CRDT node keys), every parent resolving IN PRE-ORDER, every `#p/` and
+pagelink target existing, no orphaned page, and assets and references agreeing.
+Adding a feature and not the demonstration now fails a rig instead of shipping.
+
+WRITING THE STARTER IS HOW THE CLAIMS GET TESTED, which is the whole argument
+for the doctrine. Two defects fell straight out of writing this one. A hand-authored
+table with `rows` and no fallback `html` put a working link on a page that
+back-linked to nothing — `buildIndex` reads `html`, and `writeTable` is the one
+writer that keeps the two in step, so the starter goes through it exactly as the
+issues go through `propBlock`. And `validate()` asked every AUDIO block for
+intrinsic `w`/`h`: pixels an audio player does not have, on a finding that would
+have fired for every correctly-authored clip in existence.
+
+THE ARCHIVED PAGE IS THE ⌘K DEMONSTRATION, one page doing both jobs the brief
+asked for: it is out of the sidebar, so search is the way in, and "Sharing &
+limits" names it by name because sending the file sends it too.
+
+IT COST 7,000 B, measured on the stack: 5,336 B of prose and 1,664 B of the two
+files it ships (`spaces/src/starterdata.ts` — a hand-written SVG drawing and a
+1.2 s test tone, both chosen so that deflate reduces them to almost nothing: the
+tone is exactly periodic and packs to 204 B). The ceiling moved 216 → 224 KiB in
+the same commit, with the numbers in `scripts/size-budgets.json`.
+
+THE STARTER IS NOT TRANSLATED, and that is deliberate rather than pending. The
+interface follows the reader (PLATFORM §8); a document is written in a language,
+and this one is written in English. Nine starters would be nine feature tours to
+keep in step, and the space a user then writes in would be the only untranslated
+one of the ten.
+
+---
+
+## 2026-08-22 — Inline marks: one canonical form, and the format's SECOND attribute
+
+Two decisions, taken together because the second only makes sense inside the
+first. Details in `spaces/src/marks.ts`; pinned in `scripts/test-spaces-model.ts`.
+
+**A block's marks have ONE canonical spelling.** §2.3 asked for "fixed mark
+nesting order, adjacent runs coalesced, no style" and only the middle third was
+implemented: `canonicalize` was a fixed-point loop of `</b><b>` → `''` string
+replacements, which cannot ask whether an `<i>` is inside or outside a `<b>`. So
+`<b><i>x</i></b>` and `<i><b>x</b></i>` were both canonical — one visible string,
+two byte spellings, and therefore a conflict in every diff and every future CRDT
+merge. The order, outermost first, is
+
+    a > mark > span > strong > em > u > s > sub > sup > code
+
+and `b`/`i` FOLD to `strong`/`em` on parse (the markdown importer already emitted
+the semantic pair; contentEditable emitted the presentational one, so files
+already carry a mix). `a` is outermost because a link split in two by a bold
+boundary is two links; `code` is innermost so its box hugs the text.
+
+**The engine is a pure string function, not DOM surgery.** `document.execCommand`
+is forbidden by §2.4(b) and ⌘B/I/U were calling it anyway. The replacement takes
+(inline html, plain-text offsets) and returns inline html — so the hard case,
+un-bolding half of a bold run, is pinned in a `node` rig instead of only in a
+browser. The DOM appears in two functions at the bottom of the file that convert
+a live Range to those offsets and back. `canonicalize` is now
+`canonicalMarks(sanitizeInline(html))`: what is ALLOWED needs a browser, what
+SHAPE it takes does not.
+
+**Colour is a CLASS on SPAN/MARK, matched by PATTERN, and never a `style`.** The
+vocabulary is Notion's — nine colours in two roles, `sp-fg-<name>` for the ink
+and `sp-bg-<name>` for the band behind it — and a closed vocabulary is the whole
+safety argument: the sanitizer matches a NAME instead of parsing CSS, and CSS is
+a language with `url()` in it. The allowlist is `/^sp-(fg|bg)-[a-z0-9-]{1,16}$/`
+and NOT an enumeration of today's nine, because of PLATFORM §3: with no server to
+migrate anything, a build that strips what it does not recognise DESTROYS
+documents written by a later one, so an enumeration would delete a tenth colour
+added in two years, silently, on the next edit touching the block. A pattern
+keeps it, round-trips it byte-for-byte, and renders it unstyled — degraded, which
+is recoverable. Values live in the app's stylesheet, so they can be tuned for the
+surface; an arbitrary hex in the document could not be.
+
+**Colour survives printing, and this is deliberately the opposite of the callout
+ruling.** A callout keeps its box, its rule, its tone's shape and its tone's
+name, so dropping the fill costs nothing. An inline colour has no second cue:
+drop it and the distinction the author drew is silently gone. `print-color-adjust:
+exact`, scoped to inline marks only.
+
+**Markdown: every mark the toolbar can apply exports, and imports back.** `mark`
+→ `==x==`, which is native Obsidian syntax and a Pandoc extension, so it
+round-trips outside this app too — the same standard the callout tones were held
+to. `u`, `sub`, `sup` and colour → raw inline html, which GFM permits and which
+is what Obsidian users fall back to as well; `_x_` for underline was rejected
+outright because it re-imports as ITALIC, and a mark that comes back as a
+DIFFERENT mark is worse than one that comes back as nothing. `htmlToMd` moved out
+of about.ts (where it was a DOM walk and therefore untestable, and where it had
+been silently dropping four marks) into marks.ts, over the same run list.
+
+---
+
+## 2026-08-22 — bento/spaces gets a CONTENT table, and its cells are strings
+
+**Decision.** A `table` block: `rows` (row-major, each cell INLINE HTML), `cols`
+(fractional column weights), `colAlign` (per COLUMN), `header` (absent = TRUE).
+No formulas, no recalculation, no cross-document references — the line from
+`working/design/spaces-design.md` §2.6. The database case is unaffected: it already
+shipped as the tracker (`doc.fields` + `prop` + `view`), and this is not a
+second one.
+
+**A cell is a bare string, not slides' `{html, color, bg, bold}`.** Slides' cells
+carry presentation because a canvas has no cascade; a space has a theme and a
+stylesheet, and a spaces cell's content is already rich — bold in a cell is
+`<b>`, through the same allowlist as every other block. So the entire `style`
+object and every per-cell override go away, and the only thing left in a cell is
+what someone typed. Alignment stays per COLUMN because that is exactly what a
+GFM rule row can say; per-cell alignment would export as a lie on every row.
+
+**`header` absent means TRUE**, which is the opposite of every other boolean in
+the model and is deliberate: a pipe table always has a header, so the header case
+is the one that should need no field, and a minimal hand-written
+`{type:'table', rows:[[…]]}` is then a first-class document. A headerless table
+exports with an EMPTY header row (GFM has no other way to say it) and the
+importer reads that back as `header:false`, dropping the empty row — otherwise a
+round trip grows a blank row each time.
+
+**The `html` fallback is the whole of format additivity for a block type**, so it
+is derived and rewritten on every table edit by the ONE writer (`writeTable`),
+never authored. It is the cells' own inline html joined, not their text, so a
+`#p/` link in a cell still produces a backlink (`buildIndex` reads `html`) and
+still exports as a link from a build that has no table case. It costs a second
+copy of the table's text in the file; a table that VANISHES in the build someone
+already has is not the cheaper option.
+
+**Shape is normalised at READ time (`tableOf`), never by repairing the file** —
+the same rule as `effectiveParents`, so two readers agree without exchanging an
+op and opening a space repairs nothing. Under collaboration `rows` is one
+last-writer-wins register: two people editing different cells at once keep one of
+the two edits. Slides' table has the identical limitation; the fix is a node per
+cell, which is a format change, so it is written down rather than half-built.
+
+**Editor chrome never goes inside an editable host.** The column grips first went
+into the first row's cells and were written into the document as cell content —
+and `caretToEnd` put the caret INSIDE the trailing `<button>`, so the first word
+typed in a column landed in the button and was eaten by the sanitizer on blur.
+They live in the wrapper now, absolutely positioned over each boundary. A cell is
+`data-cell` + `data-r`/`data-c`, never `data-edit`: that name means "this
+element's html IS the block's html", and the generic input handler would write
+one cell over the whole table.
+
+Details: `spaces/src/model.ts` (`tableOf`, `writeTable`, `tableFallbackHtml`),
+`spaces/src/blocks.ts` (the registry entry and `tableToMd`), `spaces/src/render.ts`
+(`renderTable`), `spaces/src/editor.ts` (`wireTables`, `tableKey`,
+`startColResize`), `spaces/src/markdown.ts` (the pipe-table branch, which replaced
+the "kept verbatim in a code block, mechanically upgradable the day a table block
+ships" workaround), and the table section of `scripts/test-spaces-model.ts`.
+## 2026-08-22 — spaces comments: the anchor IS where the thread is stored, and the block is why
+
+**Two anchors, and no third.** A thread is about a BLOCK or about a PAGE. A
+deck is a canvas, so slides can anchor a comment to an (x, y) and to nothing
+else; a space is a tree of pages of blocks, and the block is the thing that
+already has durable identity — ids are unique document-wide, never reused, and
+are what links, backlinks and the CRDT key on. A text RANGE inside a block is
+deliberately not an anchor: an offset pair has no meaning after the concurrent
+edit that moved it, the format is permanent, and shipping the wrong answer now
+would put it in every file. It is listed under "Not built yet" in
+`spaces/README.md` rather than half-built.
+
+**The anchor is expressed as STORAGE, not as a field.** `Block.comments` is a
+thread about that block; `Page.comments` is a thread about the page. That is a
+collaboration decision rather than a filing one. Under the shared engine
+(`kernel/src/sync/crdt.ts`) every non-container property is one
+last-writer-wins register per (node, key), so ONE `Page.comments` array — the
+slides shape, transliterated — would make every thread on a page contend for a
+single register: two people commenting on two different paragraphs in the same
+moment, and one comment is gone with nothing said. Per block, that case
+converges, because each block is its own CRDT node.
+
+**The caveat that remains, stated rather than pretended away.** Two people
+commenting on the SAME block concurrently, or on the same page, is still
+last-writer-wins on that one array — the same limitation slides' table `rows`
+carries, and for the same reason. Replies and resolve are in the array too, so
+a reply that races another reply on the same thread can lose. Making that
+converge means threads as their own CRDT nodes, which is an engine change, and
+kernel changes are serialized (docs/PARALLEL-WORK.md). It is not shipped
+blind: it is written in `model.ts` beside the type.
+
+Storing on the block also settles two lifecycle questions for free: deleting a
+block takes its threads with it (undoably, in the same step), and moving a
+block to another page carries them along.
+
+**Where the UI lives.** Not the gutter — a block already has one at the start
+edge, and it holds exactly two controls because a phone reserves 44px and fits
+one (2026-08-10, above); a third affordance there is a control no thumb can
+reach. Not a sidebar panel — the sidebar is the page tree, the one navigation
+this app has. Markers sit in the END margin, opposite the gutter, outside the
+text column so they never reflow the prose they are about (measured: block
+column ends at x = 1124.5, the marker sits at 1137.5). Page-level threads sit
+in a row under the title. The thread itself is the editor's existing popover —
+bottom sheet on a phone — so it dismisses like every other menu. The page tree
+carries only a COUNT of unresolved threads, which is the one comment fact worth
+knowing from another page.
+
+**Editor-only, structurally.** `render.ts` — the single renderer behind the
+editor, the reading view and print — has never heard of comments, and the
+editor paints markers only when it is not in the reading view. Verified in a
+real browser on the actual print tree: the whole-space print root rendered 11
+pages, 0 markers, and no occurrence of the substring at all. The print
+stylesheet drops them anyway, as a second line. `scripts/test-spaces-model.ts`
+pins all three as source assertions.
+
+**Comment text is PLAIN TEXT.** Not "sanitized like block html" — there is
+nothing to sanitize, because nothing is ever parsed as html: the model stores a
+string and the UI writes it with `textContent`. A comment arrives in a file
+somebody mailed you, written by a person who is by definition not the author of
+the document, and it has nothing to gain from bold. Verified in the browser: a
+comment reading `plain <b>text</b> please` renders as those characters.
+
+**The agent verb is READ-ONLY.** `bento.comments({resolved?, pageId?})` returns
+every thread, flat, each stating its anchor. Acting on a remark is the agent's
+job; resolving it is the commenter's — an agent that closed the thread it was
+asked to address would make the record untrue. Every field is coerced to the
+type the report promises, so a hand-edited file cannot make it throw halfway
+through and tell the caller the first two pages are all there is.
+
+**The name is `bento-author`**, the key the people panel already reads and
+writes. Two keys would let one file disagree with itself about who you are.
+
+**Cost.** +4,396 B on the shipped shell (166,482 → 170,878 B), inside the
+existing 176,128 B ceiling (97.0%); no budget change.
+
+## 2026-08-19 — The shells are packed with zopfli, and the format does not move
+
+Every Bento file carries its whole runtime, so the packer's efficiency is a
+property of every document anybody saves. Zopfli emits a stream in the SAME
+deflate format as zlib, just searched harder — so the shipped loader is
+untouched, already-saved files keep working, and an old updater splicing into a
+new shell sees exactly what it saw before.
+
+MEASURED, all four shells:
+
+    spaces   173,598 -> 166,482    -7,116 B   4.10%
+    slides   690,060 -> 663,760   -26,300 B   3.81%
+    dash     169,617 -> 164,813    -4,804 B   2.83%
+    type      33,899 ->  33,283      -616 B   1.82%
+
+Verified rather than assumed, because "the format does not move" is the whole
+argument. A zopfli payload handed to Chrome 148's native
+`DecompressionStream('deflate-raw')` inflated to a byte-identical result
+(SHA-256 matched) in 2.2 ms, and all four shells boot and render from
+zopfli-packed payloads — checked in a browser, not only through the gate.
+
+15 iterations, not 100: 100 buys 36 more bytes on spaces for three times the
+time. The cost is about a second of build time per shell, paid once per
+release.
+
+THE DEPENDENCY IS PER APP, RESOLVED FROM THE CALLER. `scripts/` has no
+package.json and neither does the repo root, so a bare import from
+postbuild-compress.mjs would look in the wrong place — but every app runs the
+script from its own directory, which is where `@gfx/zopfli` is declared. It
+ships WASM embedded as JSON: no node-gyp, no compiler, no platform binaries,
+140 KB, one transitive dependency. `node-zopfli` (native) would not have been
+reproducible on CI.
+
+A MISSING DEPENDENCY FAILS THE BUILD rather than falling back. Verified: exit
+code 1, with a message naming the fix. A release quietly built 4% larger
+because someone's node_modules was stale is a regression nobody would ever
+notice. `ZOPFLI=0` is the deliberate escape hatch for a local build and says in
+the same message that it is never for a release.
+
+THE SPACES CEILING DOES NOT MOVE DOWN. 166,482 of 176,128 is 94.5%, and that
+9,646 B of headroom is the point: the win is spent on the next feature rather
+than banked by re-tightening the budget, which would have meant a fifth raise
+the first time anything grew.
+
+Two alternatives measured and rejected earlier, recorded so they are not
+re-derived: BROTLI would save 20,580 B more but Chrome's DecompressionStream
+accepts only deflate, deflate-raw and gzip, and a JS decoder costs more than it
+saves; a DENSER PAYLOAD ALPHABET (basE91) would save 9,676 B but shell-gate.mjs
+hard-fails any data block containing a literal `<`, and base64 is relied on for
+being zero-`<` by construction against hostile payloads.
+
+---
+
+## 2026-08-19 — Page width has TWO settings, because it answers two questions
+
+The per-page control shipped in #325 answered "this page needs the room". It
+did not answer "I have a wide screen", and it made somebody say so on every
+page in a space one page at a time. Reported as still-narrow after it shipped,
+and MEASURED at a 2560px viewport: a 720px column using 31% of the area with
+1,591px empty beside it.
+
+Two settings now, and the split is the whole point:
+
+  · `Page.width`  — DOCUMENT data. What this page needs; travels with the file.
+  · `bento-sp-width` — VIEWER data, in localStorage. What this reader's SCREEN
+    is; never written to the file.
+
+Precedence: the page, then the reader, then the board default, then the
+measure. A reader who sets it once gets it on every page that has not asked for
+something specific, and the document is byte-unchanged — verified: four pages
+at 1500px with no `width` key stored on any of them and no `"width"` anywhere
+in the serialized doc.
+
+That split is the rule locale and reduced motion already follow (PLATFORM §8):
+two people opening one space on a laptop and a 27-inch monitor should each get
+their own answer, and neither should write theirs into the file the other
+opens.
+
+THE BUILT-IN DEFAULT ALSO GROWS, `min(max(measure, 42vw), measure × 1.25)` —
+720px on a laptop, 900px at 2560px. Capped deliberately: 720px is already ~88
+characters at 16px, and past ~95 a line gets harder to read rather than easier,
+so the cap is a typographic limit and not a shortage of nerve. Filling a 2560px
+screen with one column of prose is not the goal; not showing a ribbon in the
+middle of it is.
+
+PRINT DOES NOT INHERIT THE READER WIDTH. Paper has a fixed width, and the size
+of the monitor somebody happens to be sitting at is not a fact about the page
+they are printing. Pinned in the rig.
+
+---
+
+## 2026-08-19 — How wide a page is belongs to the PAGE, not the theme
+
+`theme.measure` is one number for the whole document — "text column width in px
+— DOCUMENT data: the same for every reader". The right answer genuinely differs
+per page, and the renderer already knew it: a page carrying a `view` block
+silently jumped from 720px to 1500px, with a good comment explaining that a
+board is not a line of text.
+
+The problem was that it decided for you and offered no way to disagree. MEASURED
+at a 1600px viewport: a 720px column with 631px of the page empty beside it, and
+0 of the 15 blocks on the starter's Welcome page reaching the limit at all. The
+line length was never the complaint — 720px at 16px is ~88 characters, already
+at the upper end of comfortable. Having no say was.
+
+`Page.width?: 'wide' | 'full'` now, offered in the page menu as Column / Wide /
+Full width. It makes the board rule EXPLICIT rather than magic: a board page
+with no key still gets its room, and a board page set to Column now gets to be
+narrow.
+
+THE DEFAULT IS AN ABSENT KEY, never a stored `'normal'` — the rule `editView`
+already follows. A page somebody set to wide and back is byte-identical to one
+never touched, and a file written before this control existed stays that way. An
+unknown value from a newer build falls back to the measure rather than to no
+width at all.
+
+Not raised: `theme.measure` itself stays 720. Widening it would push past 88
+characters for every page in the document to solve a complaint about empty
+space, which is the wrong lever.
+
+Measured after: column 720, wide 1500, full 1895 at a 2200px viewport; a board
+page with no key still 1500. +1,128 B, no ceiling change.
+
+---
 
 ## 2026-08-18 — The spaces topbar fits itself by measuring, not by px breakpoints
 
@@ -546,6 +1152,183 @@ a notes app may never blur — while a page changes only when somebody
 navigates, which is the rate presence is worth.
 
 ---
+## 2026-08-16 — Creating a document: every host VERIFIES the release it downloads
+
+**Decision.** Starter shells are bundled in no host (settled separately the same
+day: they change too often, and there are three apps with more coming), so
+fetch-from-the-release-channel is the ONLY way any tray host creates a document.
+That path must therefore verify, in this order, in every host:
+
+1. fetch the manifest **as text** — it is a signed envelope, `{payload, sig}`,
+   and the fields (`app`, `version`, `sha256`, `url`) are inside the payload
+   STRING; there is nothing useful at the top level;
+2. verify the ECDSA P-256 / SHA-256 signature over the payload's **exact UTF-8
+   bytes** (no canonicalisation) against the release public key;
+3. check the payload's `app` matches the channel being read — the channels are
+   sibling paths on one origin, so a genuine manifest from the wrong path hands
+   somebody a different application;
+4. download the shell and check its sha256 against the payload's pin;
+5. only then touch a file handle. A refusal writes **nothing**.
+
+**Why.** The shell is executable HTML written to the user's own disk, which they
+subsequently double-click and trust. Without the chain, whoever can answer for
+the release origin — compromised host, bad CDN edge, hostile-network proxy —
+chooses what code the user creates. Signature over the pin, pin over the bytes;
+neither half is worth anything alone.
+
+Step 3 is the one that is invisible to the other two, so it is the one that gets
+skipped: a `bento-slides` manifest and a `bento-dash` manifest are both
+genuinely signed by the same key, and the shell each points at really does hash
+to what its payload pins. Serving one on the other's channel passes the
+signature AND the digest — every byte authentic, just not what was asked for.
+Only identity catches a swap between two REAL releases, which is exactly what
+survives an origin or CDN compromise where the attacker cannot forge but can
+re-serve. The check must be made against the app that was **requested**, not
+against the payload's own claim about itself, and an ABSENT `app` must not read
+as a match. (`tray/ios` found both native hosts missing this while reviewing
+webext's rig — PR #315, PR #318.)
+
+**Ask for BYTES: send `Accept: */*` explicitly on every release fetch.**
+Measured against the live shell URL on 2026-08-17, independently by tray/ios and
+tray/webext: the wildcard returns 689,316 bytes and matches the signed pin; a
+browser's own `Accept: text/html,…` returns 689,675 and does not. The extra 359
+bytes are a Cloudflare Web Analytics beacon the edge injects before `</body>`
+into anything it reads as a page being browsed. Same URL, same `.bento.html`
+extension both times, so the trigger is the header — fortunate, because a
+path-keyed injection could not be avoided by any host. Most platforms already
+default to the wildcard; set it anyway, because the default is the platform's
+and not ours. (An earlier note that this was "fixed at the origin" was wrong and
+is retracted — it is live as of this entry.)
+
+**NO DOWNGRADES: every host keeps a per-app version floor.** Decided by Andy on
+2026-08-17, after `tray/ios` implemented one and `tray/webext` held pending the
+call — it is a policy trade, not a pure security win, and three hosts
+half-adopting it would be worse than one landing late. A replayed OLD release
+passes signature, app identity AND digest: it is genuinely signed and its shell
+really does hash to its pin. Only memory catches it, because a document being
+created carries no version to be monotonic against (unlike the shell's own
+update, which measures from its running build). Two details that bite:
+
+- **Raise the floor only AFTER the downloaded bytes pass their hash.** Raising
+  it on a merely-verified manifest lets one forged-but-unfetchable release lock
+  the host out of every real release below it — a failed attack made permanent.
+- **An EQUAL version must be accepted.** Re-fetching the version already held is
+  the normal case (the second document somebody creates), and refusing it breaks
+  creation on its second use rather than at some exotic edge.
+
+An unreadable store reads as NO floor: availability over protection in a case
+that is not an attack. An unparsable version component sorts as 0 rather than
+throwing — verified identical in `kernel/src/update.ts`, `tray/webext`'s
+`compareVersions` and `Releases.swift`, since `Number('x')` is NaN and
+`NaN || 0` is 0. **The accepted cost:** a deliberate maintainer rollback is
+refused until the version moves past the floor. That is the same trade
+`kernel/src/update.ts` already makes, so the whole system is at least
+consistent.
+
+**A 404 on a channel is an ANSWER, not a fault.** Only Slides is published
+today; the app list is aspirational on every host. All three say
+"<App> has not been released yet" rather than surfacing an HTTP status.
+
+**Proving the verifier REFUSES is a separate obligation from writing it.** A
+verifier only ever watched saying yes is indistinguishable from `return true`,
+so each host's rig runs the real captured manifest plus deliberately bad ones.
+Three cases are worth naming because each catches something the others cannot:
+
+- **A valid signature under the WRONG key** is not the same test as a bent one.
+  Bending bytes proves a non-validating signature is rejected, which almost any
+  bug-free crypto call manages; a signature that validates PERFECTLY under an
+  untrusted key is what catches a verifier that imported the wrong key, or that
+  would trust a key travelling inside the manifest. No test seam is needed —
+  sign the real payload with a throwaway key and hand it to the shipped
+  verifier. (The NEGATIVE cases must never go through an injected key, or a
+  verifier that trusts one passes its own tampering tests.)
+- **An unsigned manifest is refused as a CATEGORY**, not as a parse error. A
+  flat `{url: …}` is exactly the shape the old broken reader wanted, so
+  "malformed" invites someone to add a lenient fallback for it later as a
+  compatibility gap. It is not a gap.
+- **An absent `app` field must not read as a match** — `undefined !== 'bento-x'`
+  passes by construction, and a plausible tidy-up to `info.app && info.app !== x`
+  silently turns a missing field into a pass.
+
+**Status.** `tray/webext` done (`src/release.js`, used by `library.js
+newDocument`); `tray/ios` done (`Releases.swift`, PR #315); `tray/android` in
+progress.
+
+**Pointers.** `kernel/src/update.ts` is the reference implementation
+(`verifySigned` / `fetchPinned` / `verifyManifest`) and hosts should reuse it
+where they can import it. The extension **cannot** — it ships as unbundled ES
+modules Chrome loads from disk, and adding a bundler would mean the shipped
+package is no longer the reviewed source — so `tray/webext/src/release.js` is a
+deliberate line-by-line mirror, with the resulting obligation stated in the
+file: *if the key or the envelope format moves in the kernel, it moves here
+too.* `scripts/test-webext-release.ts` pins both ends against a REAL captured
+manifest (`scripts/fixtures/release-manifest-slides.json`).
+
+**The failure this came out of, because it generalises.** `newDocument` read
+`manifest.url` off the envelope's top level, where there is no `url`, and so
+threw on every invocation: the `+` button had never worked in any version. Its
+rig passed, because the fixture was written to the shape the CODE expected
+rather than the shape the SERVER sends. A fixture that is not the real shape
+proves only that the code agrees with itself — hence the captured manifest, and
+hence the same warning for android and ios.
+
+## 2026-08-16 — iOS document search: CoreSpotlight is the surface, and the port is pinned to the LIVE reference
+
+**Decision.** `tray/ios` implements the search settled below. Three things that
+the Android port and any future host should follow or knowingly diverge from:
+
+**1. On iOS the "native list" is a screen BESIDE the document browser, and the
+system index is a first-class output.** `UIDocumentBrowserViewController` stays
+the root; search is one toolbar button away from it. The extracted prose is also
+donated to **CoreSpotlight**, which is what the original gap statement ("the app
+contributes nothing to search — no CoreSpotlight, no `NSUserActivity`") actually
+asked for, and Spotlight results are resolved back through the index rather than
+by re-deriving a path. Android has no equivalent obligation; its recents list IS
+its root, so it has one surface where iOS has two.
+
+**2. TWO checks, because they catch different things.**
+`scripts/test-tray-index.mjs` runs both:
+
+- **against the shared corpus** (`tray/fixtures/`, with `tray/doc-index.mjs` as
+  the reference and `expected.json` as the answer key). This proves all three
+  hosts give the same frozen answers — including Kotlin, which nothing on a Mac
+  running the Swift rig can execute. Budgets are checked too: a port that agreed
+  on every case while carrying a different `TEXT_BUDGET` agrees by luck.
+- **against the RUNNING `library.js`**, imported live — `describe()` is exported
+  and takes injectable deps, so a fake file handle runs the real code path.
+
+The second is not redundant. A frozen answer key pins each port to a SNAPSHOT:
+when `library.js` moves, static expectations go stale silently and every host
+stays green while drifting from the thing they are copies of. Importing the
+reference means it cannot move without a rig failing. Verified 2026-08-16: the
+Swift port agrees with both, on all 11 corpus cases and on 59 documents against
+the live reference.
+
+**The corpus contract is the one to conform to where they differ.** It folds
+`isDocument` into the same call and returns nulls throughout for a file that is
+not ours; `library.js`'s `describe()` always returns a title, falling back to the
+file name, because its caller sniffs first and it never faces a non-document.
+`BentoIndex.describe` follows the corpus and the LISTING supplies the file-name
+fallback — which is the better seam anyway: inventing a title during extraction
+reports one for a file that is not a Bento document at all.
+
+**3. Ports must count UTF-16 code units.** The reference is JavaScript, where
+every index, length and budget is UTF-16; the natural Swift/Kotlin spelling uses
+graphemes or code points and disagrees on any document containing an emoji or a
+CJK character — that is real documents, not pathological ones. One deviation is
+allowed and is written down in `BentoIndex.swift`: the final `slice(0, 40KB)` can
+land inside a surrogate pair, and where JavaScript keeps the lone half a Swift
+`String` cannot hold one, so it is dropped. The rig accepts exactly that shape
+and nothing looser.
+
+**Also:** enumeration needs a folder grant the app did not previously take
+(folder-mode `UIDocumentPickerViewController`, persisted as a security-scoped
+bookmark). Each indexed document gets its OWN bookmark, minted inside the
+folder's open scope, because a file in a granted folder is readable only while
+the FOLDER is scoped and an editing session outlives the walk. Encrypted
+documents are never read for text or preview, and revoking a folder deletes its
+documents from CoreSpotlight — both enforced in `LibraryIndex`, not just
+described. Parity table: `tray/README.md`.
 
 ## 2026-08-16 — Document search: the list stays native, the indexer is shared by FIXTURE
 
@@ -616,10 +1399,34 @@ trade at this level of consequence, and it is already this repo's idiom for
 exactly this problem — the splice contract has a conformance gate in
 `release.mjs`, the save-purpose ids have `scripts/test-savepurpose.ts`.
 
-**Status: not built.** Nothing here has been implemented. The cheap intermediate
-step, if it is wanted before the full library, is a name filter over the existing
-Android recents list — that brings Android level with iOS and touches no
-extraction. Parity table and the standing gap: `tray/README.md` § Android.
+**Status (2026-08-16, later): BUILT ON ANDROID; iOS still to do.** The shape
+above survived contact. `tray/doc-index.mjs` is the reference, `tray/fixtures/`
+is the corpus (11 cases), `scripts/test-doc-index.mjs` and a JVM unit test hold
+the JS and Kotlin implementations to it, and `tray/android` indexes granted
+folders and searches their prose. The iOS session has been handed the same brief.
+
+Two things the corpus caught that reasoning had not:
+
+- **A single string value over 400 characters is not indexed at all.** The value
+  regex is capped at `{1,400}`, so a long speaker note or a wordy text element is
+  invisible to search — in all three hosts, today. Pinned by `longvalue.html` so
+  no port can quietly "fix" it into divergence; changing it has to be a
+  deliberate change everywhere.
+- **JavaScript's `\s` is Unicode-aware and Java's is not** (and Java's
+  `UNICODE_CHARACTER_CLASS` still excludes U+FEFF), so a port spelling it `\s`
+  leaves non-breaking and ideographic spaces in the indexed text and a phrase
+  search across one silently fails. The class is written out in full;
+  `whitespace.html` catches it, verified by mutation.
+
+**Thumbnails are in, and the reasoning that nearly excluded them was wrong.**
+"the preview is HTML, so a native list needs a WebView per row" conflated two
+different things: a WebView per scrolling row (the design this entry rejects) and
+ONE offscreen WebView at index time producing cached bitmaps (which costs nothing
+at launch and leaves the list plain `ImageView`s). The second is the obvious
+design and it was talked past. Details and the three ways an offscreen render
+silently produces the wrong picture: `tray/README.md` § Document search.
+
+Parity table: `tray/README.md` § Android.
 
 ## 2026-08-16 — bento/tray gets an Android host (PR #87, rearchitected)
 
@@ -752,7 +1559,7 @@ failing to re-merge after a render split them (423/2,000).
 **Pointers.** `type/src/inline.ts` (the argument is in the file header),
 `type/src/model.ts` (tagged `parseDoc`, following the spaces load contract:
 an unreadable file must never become an empty one), `scripts/test-type-model.ts`.
-Design + the measured spike behind it: `working/type-design.md` and
+Design + the measured spike behind it: `working/design/type-design.md` and
 `working/type-spike/RESULTS.md` (gitignored) — Path A, continuous pagination,
 Knuth–Plass viable live.
 
@@ -1840,6 +2647,18 @@ Naming notes, so this is not relitigated:
   it, so confirm there before submitting.
 - The App Store name carries no slash. Per the 2026-07-24 naming entry, `/` is
   a mark, never a stored name.
+- **But the ON-DEVICE name does carry it: `CFBundleDisplayName` is `bento/tray`**
+  (2026-08-18). These are different fields and only one of them is a stored name.
+  The App Store listing name lives in App Store Connect and stays "Bento Tray";
+  the bundle display name is a LABEL — it drives the home-screen caption, the
+  document browser's title ("bento/tray Recents") and the app's folder in Browse,
+  and iOS never turns it into a path, because the container on disk is addressed
+  by uuid. Verified on iOS 26: all three render it verbatim, nothing escaped or
+  substituted. The 2026-07-24 rule scopes the ban to "filenames, URLs, package
+  names and social handles… anywhere a name must be stored or typed", and a
+  display label is none of those — it is exactly where the mark belongs. Recorded
+  because "the App Store name carries no slash" reads at a glance as "the app is
+  never called bento/tray", and someone will otherwise "fix" the plist.
 
 **One app, not two.** A separate "generic HTML runner" listing would risk
 guideline 4.3 (duplicate apps from one developer) and doubles the listing
@@ -1947,13 +2766,13 @@ deletion set included `slides/index.html`, the gallery, `agents.md`,
 
 Rig: `scripts/test-publish-gate.mjs`; shared logic `scripts/site-inventory.mjs`.
 This is the first half of the multi-app release work
-(`working/spaces-design.md` §6.1); per-app assembly — build one app, restore
+(`working/design/spaces-design.md` §6.1); per-app assembly — build one app, restore
 the others byte-identically from the published tree — is the second, and
 spaces cannot be released until both exist.
 
 ## 2026-08-02 — bento/home runs documents in a per-document origin, or not at all
 
-`bento/home` is a launcher (`home/`, `working/home-design.md`): it holds no
+`bento/home` is a launcher (`home/`, `working/design/home-design.md`): it holds no
 document content, only `FileSystemFileHandle`s in IndexedDB, so a deck you were
 working on reopens with write access after one permission click. That part is
 measured and built. **How a document is actually OPENED is the hard part, and
@@ -2010,7 +2829,7 @@ cadence and the deploy-order care that implies (`docs/PLATFORM.md` §5).
 
 **To confirm before building** (none of it testable in an automated browser —
 permission-gated APIs report `denied` there without prompting,
-`working/home-design.md` §3.2, a trap that already produced two wrong
+`working/design/home-design.md` §3.2, a trap that already produced two wrong
 conclusions):
 
 1. Does a `FileSystemFileHandle` survive a cross-origin `postMessage` and stay
@@ -2262,7 +3081,7 @@ old shared-name code (7/8), which is the property that makes it a gate.
 
 ## 2026-08-02 — A release seeds from what is published, and builds one app
 
-Second half of the multi-app release work (`working/spaces-design.md` §6.1).
+Second half of the multi-app release work (`working/design/spaces-design.md` §6.1).
 The first half made a destructive publish impossible; this one makes a
 non-destructive one possible.
 
@@ -2598,6 +3417,26 @@ build failing. It is real now: `scripts/size-budgets.json` holds the ceiling,
 is expected; raising it SILENTLY is what the check stops — the budget moves in
 the commit that spends the bytes, where a reviewer can see it. Recording an
 intention and calling it a rule is how the 100KB ceiling got missed at all.
+
+*Superseded 2026-08-24 — bento/spaces has no hard ceiling.* The maintainer's
+call, and the number that prompted it: 258,454 B against a 256 KiB ceiling,
+98.6%, with the polish round declining worthwhile fixes over a few hundred
+bytes. A find-highlight refinement was dropped for size; an `aria-current` fix
+landed only because it cost 32. When a ceiling starts choosing which
+accessibility fixes ship, it is costing more than it saves.
+
+**What went, and what did not.** Only the failure. `spaces` is now
+`enforce: false` with a `reference` watermark, and every run still prints its
+size and the drift since that number — `track spaces 258454 B (+312 B since
+reference, no ceiling)`. The original entry's point was never the block; it was
+that a budget nobody measures is a wish, and that the breach must not be found
+by a reviewer weeks later. Measuring survives. Move `reference` when a change
+buys real bytes and say what bought them, exactly as before.
+
+**Do not quietly put it back.** `enforce: true` restores the ceiling for any
+shell, and the other apps keep theirs — this decision is about spaces only. If
+a future round wants the discipline back, that is a conversation, not a
+one-line edit to a config file.
 
 ## 2026-08-03 — An encrypted space is never written to disk in the clear
 
@@ -3127,6 +3966,155 @@ payload 72KB → 79KB). Most of it is the finding messages, which are the
 product: a code with no explanation is not actionable. Anyone tempted to shrink
 this should shorten prose, not drop checks.
 
+## dash: a workbook holds two kinds of sheet — spreadsheets and datasets
+
+2026-08-11. Settles a tension that was shipping as a visual lie.
+
+An 8-row dash sheet has no row 9. ArrowDown from the last row does not move,
+pressing `=` there opens the editor on the last DATA cell, and the ruled lines
+under the totals row — which look exactly like empty spreadsheet rows — are
+background paint on `.dg-table`. So the most common gesture in spreadsheets,
+"click below the numbers and type `=SUM(`", silently targets a cell holding
+real data. The footer total is not a formula and cannot be one: it is
+`sheet.totals`, a property of the column.
+
+THE DECISION: two sheet kinds, and the difference is where the type lives.
+A SPREADSHEET is typed by CELL — unbounded, sparse, `=SUM()` anywhere, a canvas
+that happens to hold numbers. A DATASET is typed by COLUMN — exactly the rows
+there are, columnar and dictionary-encoded, and the kind that earns column
+formulas, type refusal on import, conditional formats, chart binding, pivots
+and (when it lands) SQL.
+
+Neither is a lesser version of the other, and collapsing them either way loses
+something real: one type per cell destroys the column type that the columnar
+kernel and every derived feature depend on; one type per column destroys the
+scratchpad. The conversion BETWEEN them is the actual product — promote a range
+to a dataset, or open a dataset as a flat copy for the one awkward number the
+pipeline cannot express. That round trip is why people abandon BI tools for
+Excel, and dash can hold both ends of it.
+
+WIRE WORDS: `kind: 'table'` remains the dataset. Renaming it would break every
+file that exists, and "Dataset" is a display label — the rule `select()`
+already follows. The new kind is `kind: 'grid'`.
+
+This is safe to add because `parseDoc` preserves an unrecognised `kind`
+VERBATIM rather than coercing it to a table (PLATFORM §3 additivity, fixed
+earlier and commented in model.ts). Old builds round-trip a spreadsheet sheet
+without damaging it.
+
+Consequences recorded now rather than discovered later: the CRDT keys dataset
+rows by `rid` and a spreadsheet has none, so its cells are keyed by POSITION
+(`g␟<sheet>␟<col>,<row>`) and a row insert MOVES cells rather than renumbering
+identities — a different convergence problem needing its own rig, not a reused
+one. `a1.ts` already lexes `Sheet1!A1` but nothing resolves it, and a
+spreadsheet without cross-sheet refs is half a spreadsheet, so that is in scope
+for the kind. `.xlsx` import should land as a SPREADSHEET rather than guessing
+a column model — which is what `CellOverride.xlsxF` (the formula kept verbatim
+because dash cannot place it in a column model) has been evidence of all along.
+
+Full design: `docs/dash-sheet-kinds.md`. Not built.
+
+## dash: one view vector, read by everything that describes the view
+
+2026-08-11. Filtering and sorting write `store.order[sheetId]` — an index
+vector, view state, no checkpoint and no op, so they never dirty the file.
+Three surfaces described that view and only one read the vector.
+
+Measured on the starter workbook, filtered to deals over £10,000: the grid drew
+four rows worth £69,050, the footer said £97,050 in bold underneath them, the
+chart drew a third bar for two of the removed rows, and the status bar said
+"4 of 8 rows" — right, until anything else changed, because `showView()` had a
+single caller inside the filter menu.
+
+THE RULE: anything that describes the view reads the same vector. `aggregate`
+(grid.ts) takes it, `optionFor` (chart.ts) takes it as a row index list, Find
+walks it, and `viewStatusText` is derived from it in grid.ts because the grid
+owns the view. `applyView()` is the funnel every path already goes through —
+sort, filter, clear, sheet switch, structural edit — so it announces.
+
+A SORT MUST NOT MOVE A TOTAL and a FILTER MUST. A sort permutes the vector, so
+summing through it is unchanged; a filter shortens it. Both are guarded, and
+the sort case is the one worth having a test for, because getting it wrong is
+invisible.
+
+Excel agrees, which was discovered afterwards and is reassuring rather than
+load-bearing: a table's totals row is `SUBTOTAL(109, …)`, and `SUBTOTAL` ignores
+rows a filter has hidden.
+
+## dash: the chart is pinned to the sheet it was made from
+
+2026-08-11. A chart is an argument about one table — `StoryStep` already
+carried `sheet` beside `chart` for that reason. It does not follow the tab bar.
+Reading `grid.sheet` instead left the previous sheet's chart painted beside the
+new grid, and the next edit redrew it as an empty axis against columns that had
+never existed on the sheet in front of the reader.
+
+It names its sheet in the heading when that differs from the one on screen, and
+offers to re-bind rather than re-binding itself: a silent re-bind changes what
+the chart asserts without anyone asking, which is the same failure as
+staleness. If its sheet is deleted the panel closes rather than holding numbers
+about nothing.
+
+The cause of the filter half is worth recording separately: filtering emits
+`view`, never `doc`, and only `doc` was listened for. That is not a chart bug,
+it is what happens when view state is invented later than the listener.
+
+## dash: sheet tabs at the bottom, and reorder is a patch
+
+2026-08-11. Sheets moved from a list in the left properties panel to a tab
+strip along the bottom edge. The panel existed only for that list, so it is
+gone and the grid is ~200px wider at every size.
+
+Sheet order is TAB ORDER and it lives in the document, so a reorder is an
+undoable patch whose inverse carries the ORIGINAL index — one undo returns a
+dragged tab to where it was, not to the end. Reorder is implemented on mouse
+events rather than HTML5 drag-and-drop, which is untestable without a real
+mouse and dead on touch; `Move left` / `Move right` in the context menu give
+touch and keyboard the same operation.
+
+The active tab carries ONE mark: a 2px rule in the ink colour. It first shipped
+with four — rounded corners, a border, a 3px amber bar and a heavier weight —
+because each had been added to satisfy a contrast measurement and none was
+removed afterwards. The brand amber is 2.02:1 on white and cannot carry a
+non-text indicator alone, which is what forced the props. Ink is 14.51:1 light
+and 13.75:1 dark, so one mark suffices. Amber stays on things about the
+DOCUMENT: the unsaved dot, a filtered column header. A tab is navigation.
+
+## dash: Find searches the file, because the grid is a window onto it
+
+2026-08-11. About forty rows of a 5,000-row sheet exist in the DOM. Measured:
+`document.body.innerText` holds 1,528 characters for 20,000 cells, and Chrome's
+own `window.find('Customer 5000')` returns FALSE for a value plainly in the
+file. So the browser's find is not merely unhelpful here, it is WRONG with the
+browser's authority behind it, and that is what earns dash the right to take
+⌘F. Where the grid is not painted — the dashboard — the key is given back,
+because there the browser can see everything and taking it would be a downgrade.
+
+Matching runs over BOTH the displayed text and the stored value, and the hit
+records which matched. That is not cosmetic: `12,400` and `£` exist only in the
+rendering, `12400` only in the file, and which one matched decides whether
+Replace may touch the cell. A match found only in the formatted text is refused
+and counted, because there is no defensible way to push a substring of a
+rendering back into a number.
+
+Hits walk the VIEW VECTOR, so a find never jumps to a row the filter is hiding,
+and Replace patches are keyed by RID so a filter cannot re-target a write.
+
+
+### Correction, same day: the spreadsheet kind already existed
+
+The entry above proposed `kind: 'grid'`. Wrong — `CanvasSheet` is the
+spreadsheet kind and has been in the format since commit one, deliberately:
+"the classic sparse A1 map… in the format from commit one, because an escape
+hatch added later is permanently second-class (PLATFORM §3)". It carries the
+sparse cell map, per-cell value and formula, column widths and row heights, and
+per-cell colour/background/bold/alignment — which also answers the "no cell
+formatting at all" gap for that kind.
+
+So the decision stands and the model change is nil: `table` is the dataset,
+`canvas` is the spreadsheet, and the work is implementation, not format. Adding
+a third kind would have left two half-built spreadsheet kinds. "Canvas" stays
+the wire word; the label a reader sees is "Spreadsheet".
 ## 2026-08-15 — The sync engine's shape gains a text property, and children become optional
 
 **Context.** `DocShape` described a document as two levels — `parents` holding
@@ -4658,3 +5646,1144 @@ ends up, doesn't have that failure mode. Reach for this ordering by
 default the next time two placement rules collide in this sidebar (or
 any list with more than one classification axis) rather than
 re-deriving it from scratch under a bug report.
+## 2026-08-22 — spaces plays video and audio, and nothing in it ever autoplays
+
+`bento/spaces` gains a `media` block: ONE type carrying `kind: 'video' |
+'audio'`, mirroring `image` down to the hybrid `src` (`asset:` · `data:` ·
+`https:`), the remote-consent gate and the percentage width. Two types would
+have meant two registry entries, two renderer cases and two exporters kept
+saying the same thing, and everything that actually differs between a clip and
+a soundtrack is one branch wide.
+
+**Autoplay is recorded and never obeyed, and that lives in a FUNCTION.** Slides
+learned the shape of this the expensive way: autoplay set at render time fires
+on the editing canvas and in every thumbnail, so it belongs to present mode —
+the one surface that owns playback. A space has no such surface. It has an
+editor, a reading view, a printout and a file-manager still, and a clip that
+starts itself is wrong in all four: the reading view because a page you scrolled
+past should not start talking, the still because it is a picture.
+
+So the rule is not "the renderer happens not to set it", which is a property of
+one function that the next surface would have to rediscover. `blocks.ts
+mediaPlayback(b)` returns the flags a surface may apply and its `autoplay` is
+typed `false` — it cannot return anything else. `Block.autoplay` still
+round-trips untouched (PLATFORM §3), because a build that DOES have a
+playback-owning surface may legitimately write it. Pinned three ways in
+`scripts/test-spaces-model.ts`, including against a block that asks for it, plus
+a source assertion that `render.ts` never sets the attribute by any spelling.
+
+**Paper and thumbnails get a still, gated on `printing`.** That flag already
+means "this output cannot be interacted with", and both surfaces pass it —
+print, and `preview.ts`'s file-manager render. The still is the author's poster
+frame if there is one and a labelled box if not; never nothing, because a
+printed handbook that silently omits the paragraph where the demo video was is
+the same class of bug as a toggle that prints shut. `preview.ts` also bans
+`video,audio` outright, which is now defence in depth rather than the mechanism:
+by the time it runs there is nothing to ban.
+
+**A linked clip needs the reader's consent more than a linked image does.** A
+remote `<video>` asks its host for byte ranges the moment the element is parsed,
+so no autoplay is needed to make it a beacon — opening the space is the ping.
+Same gate, same host named, different words ("Video from {host}" / "Load this
+video"). The preview passes no `allowRemote` at all, so a still built for a file
+manager can never make a request: verified, the emitted preview carries zero
+`src` attributes.
+
+**The URL box is its own gate.** `src` is not inline html, so it never passes
+through `sanitize.ts` — a `javascript:` typed into "Use a link…" would be
+written straight onto the element. It is an `^https?://` ALLOWLIST, never a
+`javascript:` blocklist, matching the reasoning behind `HREF_OK`.
+
+**A clip exports as a markdown LINK.** Markdown has no video. `![](clip.mp4)` is
+image syntax and draws a broken-image glyph in every renderer that has ever
+existed; a bare URL becomes a player on github.com and on nothing else. A link
+is correct everywhere: it says what the thing is and where it is. The target is
+`src` verbatim, `asset:` and `data:` included, exactly as the image exporter
+already writes it — a link that does not resolve outside the space is the truth
+about an embedded clip, and a truthful dead link beats a dropped block.
+
+**Nothing is re-encoded.** `prepareImage` exists because a phone photo is 4000px
+wide in a 720px column; there is no equivalent cheap win for video, and
+transcoding in a browser tab means shipping an encoder and taking minutes over
+it. So `MEDIA_EMBED_BUDGET` (8MB, twice the image budget, matching slides) is
+the point at which the question is worth asking rather than a size we can
+rescue. A browser file picker hands over bytes and never a path, so "keep it on
+disk and point at it" cannot be offered — the URL field is the whole escape
+hatch, and it is where a "no" lands you.
+
+**Cost.** 166,482 → 172,722 B on the shipped shell (+6,240 B, +3.7%), and the
+`scripts/size-budgets.json` ceiling moves 172 → 176 KiB. That is the zopfli
+headroom being spent on a feature, which is what it was left for.
+## 2026-08-22 — A link card is what the author typed; nothing is fetched, ever
+
+**Decision.** bento/spaces gets a `link` block: a card for an address on the
+web, carrying `url`, `title`, `desc`, `site`, `icon` and an optional `image`.
+**Every field is stored in the file.** There is no fetch at render time, and
+there is no fetch at authoring time either — not even an explicit, opt-in one.
+The author fills the card in, and the dialog says so in the first line the eye
+lands on: "Nothing is fetched. A card shows what you type here — opening this
+space never contacts the site."
+
+**Why not at render.** Settled already: PLATFORM §1 (no network to open, edit,
+read or save) and "A space does not phone home when it is opened"
+(2026-08-03). A card that fetched on open would be the tracking pixel that
+decision was written about, wearing a card for a hat.
+
+**Why not an opt-in fetch in the EDITOR either** — the interesting half, since
+about.ts's update check is precedent that an explicit, documented, opt-out
+network touch can be on-platform. Three reasons, in order of weight.
+
+1. **It cannot work.** Reading a url's OpenGraph tags means reading a
+   cross-origin HTML body. `fetch` gets an opaque response under `no-cors` and
+   a CORS failure otherwise; from `file://` — the origin this format exists for
+   — it fails outright. Notion and Slack do this on a SERVER, which is exactly
+   the component Bento does not have. The only way to ship it is a proxy we
+   run, i.e. a backend, i.e. off-platform. A feature that needs a server is not
+   a feature this app can have a debate about.
+2. **The update check is a different shape.** It contacts ONE origin we
+   control, on a schedule the reader can turn off, to verify a signature
+   against a key already in the file. A metadata fetch contacts an ARBITRARY
+   third party named by the document — the author's choice, made with the
+   editor's user's IP address. That is a category the update channel is not in.
+3. **The honest v1 is the one that stays honest.** A stored card is legible in
+   the JSON, diffable, works offline, and cannot rot into a request when
+   someone later "just adds a refresh button".
+
+**The url is untrusted input.** It is a block FIELD, so it never passes through
+`sanitizeInline` — `sanitize.ts` exports `externalHref()` for it, the outward
+half of `HREF_OK` (`https:`, `http:`, `mailto:`), tested against the RAW string
+for the documented `.href` reason. An allowlist, not a blocklist: the URL
+parser strips tabs, newlines and leading whitespace from a scheme, so
+`ja\tvascript:` and ` javascript:` are both `javascript:` when followed and
+neither starts with `https:`. A url outside the list renders as a DEAD card
+that keeps its title — it degrades, it does not vanish, and it is never an `<a>`
+that goes nowhere. Pinned with eleven hostile forms in the model rig.
+
+**No remote images, and no placeholder either.** `image` is `asset:` or `data:`
+and nothing else; a remote one is DROPPED by `linkCard()` rather than deferred
+behind a "load this image" button. The image block's placeholder stands in for
+the block's entire content, so a reader has something to consent TO; a card's
+thumbnail is decoration beside a link that already works. The editor's picker
+runs the same `prepareImage` → `internAsset` path an image block does, so a
+picked thumbnail is embedded bytes.
+
+**`html` is written beside the fields**, exactly as a `prop` block does it, by
+ONE writer (`editor.applyLinkCard`). Format additivity is a promise about what
+OLD builds do, and it is only kept if the readable fallback is written at the
+same moment as the fields.
+
+**In Markdown a link card is a link** — `[title](url) — description`, with
+brackets escaped and the angle form for a url holding a space. Not a table, not
+an html `<div>`: every card-shaped export stops being a link the moment it
+leaves this app, and where it points is the one fact that cannot be
+reconstructed. A card with no valid url exports as its plain text, so a reader
+is never handed something to click that goes nowhere.
+
+**Deliberately NOT in this change:** pasting a bare url as a card. That belongs
+to the paste pipeline, which is another agent's zone right now, and a second
+document-level `paste` listener would race the first. The insert paths are the
+`/` menu and the Insert dropdown.
+
+**Verified.** 514/514 in `scripts/test-spaces-model.ts` (up from 460), which
+now includes the negative: `linkCard()` drops six shapes of remote image, and
+`render.ts` contains no `fetch`/XHR/`new Image()` and reads its only `img.src`
+from the filtered value. In Chrome, on a served copy carrying four cards —
+including one whose `image` is `https://tracker.invalid/pixel.png` and one
+whose url is `javascript:alert(1)` — `performance.getEntriesByType('resource')`
+was EMPTY and the network panel showed one `blob:` (the shell's own inflated
+module) and nothing else. Shell 166,482 → 171,074 B, inside the 176,128 ceiling;
+no budget change.
+
+## 2026-08-22 — The two portability exits for bento/spaces, and what each one refuses to carry
+
+**Decision.** `spaces/src/portable.ts` owns both directions of "a space is never
+a dead end": `extractSpace()` cuts one page (optionally its subtree) out as a
+complete `bento/spaces` file, and `planGraft()` nests another space's pages
+under a page of this one. Pure and DOM-free like `markdown.ts`; the browser
+halves are `editor.openExportSpace` / `editor.importSpace` and one hook in
+`main.ts`. Five things were settled, all of them the kind that fail silently.
+
+**A fresh `docId`, and no `collab` whatsoever.** An extract that kept the parent
+document's id is a FORK of it: `SyncSession` keys BroadcastChannel on `docId`
+and the saved file IS the capability, so a three-page extract would join the
+two-hundred-page space's room and sync into it. Keeping `collab` is worse than
+that — `room`, `key`, `writerPriv`, `ownerPriv` and the invite chain are the
+capability to read and write the WHOLE space, and handing them to someone you
+sent three pages to is the leak the reader-copy paths already strip for. So the
+extract mints a new id and carries no credential at all. `template` goes too (it
+re-mints `docId` on every open, which would undo the identity just given);
+`readonly` STAYS, because upgrading a reading copy is not the exporter's call.
+
+**A link out of the extracted set becomes the literal `[[Page title]]`** — the
+same thing an unresolvable wikilink becomes on the way IN (`resolveWikilinks`).
+Text that names the page is honest, searchable, exports as correct Markdown, and
+re-resolves if the halves are reunited. The alternatives are worse in both
+directions: a silently unlinked label lies about what the file said, and a live
+`#p/<id>` that resolves to nothing looks fine until it is clicked — and after an
+import it can land on a STRANGER page that happens to hold that id.
+
+**Only referenced assets travel.** Images are the only thing in a space with
+real weight; an export carrying the whole document's assets is a copy with pages
+hidden. Fonts are the exception and not really one: `doc.fonts` is named by the
+theme, so every page references them.
+
+**Ids on the way in: keep, and rename only a collision** — via model.ts's
+`repairId`, now exported. Ids are unique across a document and never reused, so
+pages and blocks are claimed from one namespace; keeping the ones that do not
+collide means links, backlinks and future CRDT node keys survive an import that
+did not have to touch them, and the derivation is FROM THE BYTES for exactly the
+reason written beside `repairId` (never `Math.random`, never `docId`, which
+`template: true` moves). Links inside the import follow the rename in the same
+pass, so nothing arrives pre-broken. Assets merge on content addressing, with
+the byte-compare and `~n` variant `internAsset` already uses — trusting a key
+alone would replace the host's image with the visitor's, silently, in a file the
+author then mails.
+
+**The imported file is untrusted and gets no side door.** Its document block is
+read from an inert `DOMParser` document (no browsing context: nothing runs, no
+resource loads), `parseDoc` decides whether it is a space and REFUSES rather
+than degrading (the load contract), an encrypted envelope is reported instead of
+guessed at, and `sanitizeInline` runs over every arriving block before any of it
+reaches the document. The graft is one `store.commit`, so it is one ⌘Z, like the
+Markdown import.
+
+**Guarded.** `scripts/test-spaces-model.ts` runs the whole round trip — extract a
+subtree, import it into a space that collides on every id and on an asset key —
+and asserts no id collision, no dangling link, no credential in the bytes, the
+asset merge in both directions, and additivity through both legs. The one-undo-
+step half is in `scripts/test-spaces-undo.ts`, which is bundled and has the real
+Store.
+
+**Cost.** Shell 166,482 → 175,690 B (+9,208, 5.5%); `scripts/size-budgets.json`
+raised 176,128 → 184,320 in the same commit, because 438 B of headroom is inside
+the packer's own cross-node-version spread and would fail CI for no reason.
+
+## 2026-08-22 — bento/spaces: a properties panel that defaults to closed
+
+**Decision.** bento/spaces gets a right-hand properties panel (`spaces/src/props.ts`),
+structurally the page tree's mirror image — same `.sp-resizer` strip, same
+chevron, same drag-to-resize and double-click-to-reset, same
+`localStorage`-only state. It shows BLOCK properties for the block the caret or
+the last click was in, and PAGE properties underneath, in accordion sections
+whose open state is remembered per title exactly as slides' `.ed-section`
+retrofit does.
+
+**Why a panel at all.** The settings existed; the place to look for them did
+not. A table's shape came from a bar above the table, a code block's language
+from a hover chip, an image's width from a floating tool row, a link card's
+fields from a per-block menu, and the page's own width from the PAGE menu. Each
+is discoverable only by someone who already knows it is there, and none of them
+answers the question in the general case. **The old surfaces stay** — the chip
+on a callout is still the fastest way to change a tone, and deleting it to
+justify a panel would be a worse editor with a tidier diagram.
+
+**CLOSED BY DEFAULT, and this is the load-bearing part.** `spaces: a wide screen
+gets a wide page` (aacf7e2) had just given the reading column the window's
+slack, after the complaint that a 720px column on a 2560px screen used 31% of
+the area. A panel holding 280px of that open on every screen forever, for
+settings most people change once a month, takes the fix straight back. So:
+`inspClosed = true`, and only an explicit `'0'` in `bento-sp-insp-closed`
+(written when somebody opens it) makes it open — an absent key, a new browser
+or a storage exception all mean closed. While closed the panel is
+`flex-basis: 0` with no inline padding and no border, so `.sp-main`'s
+`flex: 1 1 auto` takes the width straight back.
+
+MEASURED, closed, against the same shell without this change: at 1280px the
+reading column is 720px either way; at 2560px it is 900px either way. The whole
+cost is the 5px chevron strip (main 1031 → 1026 and 2311 → 2306), which is what
+buys a control on the panel's own edge instead of one in a toolbar across the
+room.
+
+**Below 820px it is an overlay, not a column** — the bargain the page list
+already makes at the same breakpoint, with the same `.sp-scrim` to tap away.
+
+**Its topbar button exists only where the chevron cannot.** Above 820px the
+strip carries the control, so a second one in the bar would be the duplication
+`.sp-panel-toggle` already documents avoiding. Below 820px the button leads —
+until `fitTopbar` folds the bar, when it moves into ⋯ with undo/redo and the
+export actions. MEASURED at 375px: leaving the 40px button in a folded bar took
+the document title from 70px to 26px, which is a title nobody can read in
+exchange for a control that is one row of an already-open menu.
+
+**One control, one commit, one ⌘Z.** Every block edit goes through a single
+helper wrapping one `store.commit`, and every text field commits on `change`
+rather than `input` — `input` would buy an undo entry per keystroke, which is
+the exact thing `store.ts`'s typing run exists to avoid.
+
+**Which block the panel means** is tracked on `focusin` AND `mousedown`, capture
+phase, on `.sp-main`. `focusin` alone answers for text and stays silent for
+tables, images, clips and cards — exactly the types with settings worth a panel.
+`mousedown` rather than `pointerdown` because a real click fires both while a
+driven one may not, the same wall CLAUDE.md records for Gesto in slides.
+
+**Guarded.** `scripts/test-spaces-model.ts` pins the default-closed preference,
+the three properties of the closed geometry, that nothing about the panel
+reaches the document, the overlay below the breakpoint, the accordion's
+persistence, the one-commit rule, and that the block chips survived.
+
+**Cost.** Shell 196,950 → 203,654 B (+6,704, 3.4%); `scripts/size-budgets.json`
+raised 204,800 → 212,992 in the same commit, because 1,146 B of headroom is
+inside the packer's own cross-node-version spread and would fail CI for no
+reason.
+
+## 2026-08-22 — bento/spaces goes dark, and its reading column goes with it
+
+**The theme is a VIEWER preference and never document data.** localStorage
+`bento-theme`, through `kernel/src/theme.ts`, which slides already shipped
+(#285) — the same rule the interface locale and reduced motion follow, and
+PLATFORM §8's. Two people opening one space are two readers in two rooms; a
+theme in the file would travel to the recipient and override theirs, and it
+would make a file's bytes depend on who last looked at it. `startTheme()` runs
+AFTER `capturePristine()` in main.ts for exactly that reason, and the saved
+`<html>` tag was measured bare: no `data-theme`, no `color-scheme`.
+
+**WHERE THIS DIVERGES FROM SLIDES, AND WHY.** slides themes only the chrome
+AROUND the deck: a slide is a bounded page on a canvas, its background is data
+the author chose, and someone proofing at midnight still needs to see what will
+be projected. Spaces has no such page. `--bg` is THE ONE GROUND — bar, both
+panels and the reading column all sit on it with hairlines and nothing else
+between them, which is what the chrome-reads-as-one-document work settled one
+commit earlier. A dark interface with a white reading column would be a white
+rectangle filling most of the window: not a dark interface, and a
+re-introduction of the floating-card look that was deliberately removed. So in
+spaces the reading surface IS chrome and it follows the reader.
+
+`doc.theme.background/color/accent` still exist in the format and are still the
+DOCUMENT's colours — but nothing in the live app paints them; the only consumer
+is `preview.ts`, the static file-manager still. That surface stays the author's
+in both themes, unconditionally: it renders with scripting off, so there is no
+localStorage, no reader and no preference to honour — only a file manager
+drawing a thumbnail. A `prefers-color-scheme` block there would be a guess made
+on someone's behalf. If it ever changes it changes with the FORMAT.
+
+**The document's own colour VOCABULARY does follow the reader**, and that is
+the same ruling read from the other side. The nine `sp-fg-*`/`sp-bg-*` marks
+and the five callout tones are a closed vocabulary of NAMES — the author picked
+"red", not `#c0392b` — which is precisely why the value under each name can be
+tuned per surface, as the palette comment has said since the marks shipped. An
+ink measured to clear 4.5:1 on white is a smudge on a near-black ground, so
+each `--c-*` carries a light value and a dark one. The BANDS need only one set:
+they mix into `transparent` and land correctly on either.
+
+**Callout tones are ONE HUE each, and the box derives from it.** The fill is
+that hue mixed into `--bg`, the label is it mixed into `--ink` — a pale tint
+with a dark label on white, a deep tint with a lifted label on near-black, from
+five numbers instead of thirty. Measured both ways: labels 4.98–6.49:1 light,
+6.5–8.4:1 dark.
+
+**THREE STATES, so the dark values appear TWICE.** A reader chose light, chose
+dark, or chose nothing. The choice stamps `data-theme`; the default follows the
+OS. So dark is stated under `@media (prefers-color-scheme: dark)` guarded
+`:not([data-theme="light"])` AND under `[data-theme="dark"]`, or the picker
+only works in one direction. Verified with the attribute removed: dark OS →
+dark, light OS → white, `data-theme="light"` under a dark OS → white.
+
+**BOTH ARE @media screen, AND THAT IS HOW PAPER STAYS LIGHT.** Print matches
+neither, so on paper the unconditional light block is simply what applies and
+the print sheet needs no third copy of the palette. It carries one line the
+media query cannot: `color-scheme: light only !important`, because theme.ts
+writes `color-scheme` INLINE on `<html>` and an author `!important` is the only
+thing that beats an inline style.
+
+**An image gets a white ground in both themes.** Document content is never
+inverted, dimmed or filtered — but a diagram or logo exported against a
+transparent background is a shape floating in nothing on a dark page, and
+black-on-transparent artwork vanishes outright. So `.sp-b-image img` paints
+white behind itself and takes a hairline, in light as well, so the two themes
+frame a picture the same way.
+
+**Where the control lives.** About → Appearance, directly above Language: they
+are the same kind of thing, preferences belonging to whoever opened the file.
+It is built in its own `spaces/src/appearance.ts` and costs about.ts one import
+and one `card.append(...)` — about.ts is a 355-line function that several
+branches edit at once, and this is the smallest seam that still puts the
+control in the right place.
+
+**Guarded.** `scripts/test-spaces-model.ts` gained twelve checks: both dark
+blocks exist and are byte-identical, they define every role light does and
+invent none, every themed role is actually referenced by a rule, the light
+palette has not forked from slides and type, no literal colour survives outside
+the token blocks and the print sheet (three named exceptions), `startTheme()`
+runs after `capturePristine()`, the Appearance control never touches the store,
+and the still preview has no theme of its own.
+
+**Cost.** Shell 213,434 → 215,002 B (+1,568, 0.7%). No budget raise: the
+ceiling stays 221,184.
+
+## 2026-08-22 — bento/spaces checks for updates at launch, and the About dialog says so
+
+**Decision.** bento/spaces asks its release server for a signed manifest once at
+launch, gated on the kernel's `bento-auto-check` preference, and the About
+dialog carries the switch that turns it off. It was manual-only before, which
+left the switch nothing to switch.
+
+**Why this is not "phoning home."** The 2026-08-03 rule ("A space does not phone
+home when it is opened") is about the DOCUMENT: an author who mails you a file
+must not learn your address and the moment you opened it, which is what a remote
+`<img>` in a page delivers. This is the APP asking its own release origin
+whether it is current, on the reader's behalf and under the reader's switch. It
+sends no id and carries nothing from the document; a remote `src` in a document
+still renders as a placeholder naming the host, unchanged. The two rules answer
+different questions and both still hold.
+
+**Same preference as slides,** which has checked at launch since v0.9. One key,
+`bento-auto-check`, so turning it off in one app turns it off in both — a suite
+where the same switch means different things in two apps is worse than a suite
+with no switch.
+
+**The result only changes a sentence.** The check is `void`ed and its failure
+swallowed: a launch with no network reads "Launch check couldn't reach the
+release server (…). Check manually below." and nothing else about the app
+differs. There is no badge, no banner and no automatic download; updating is
+still a button somebody presses.
+
+**Where it is stated.** In the dialog, beside the switch, in the reader's own
+language: "An update check is the only network this app makes on its own. It
+asks the release server for a signed manifest and sends nothing about you or
+this document — no ids, no telemetry." Live collaboration is network too, but
+it is network the reader started.
+
+## 2026-08-25 — the square root: Chromium's radical join, accepted unfixed
+
+**The symptom.** In a formula, the radical's hook does not meet its overbar —
+a visible step where the two should be one stroke.
+
+**Status: accepted, unfixed.** Formulas keep the generic `math` family. There
+is a mitigation that helps on macOS and it is written down below, deliberately
+not shipped. This waits for an upstream fix.
+
+**Every font tested breaks.** Measured on the affected engine, not inferred:
+
+| platform | what generic `math` picks | radical join |
+|---|---|---|
+| macOS | STIX Two Math | broken |
+| Windows | Cambria Math | broken, same way |
+| Windows, forced `serif` | Times New Roman | smaller break, still broken |
+
+Three fonts, three breaks. That is what rules the font out as the cause: a
+defect belonging to STIX would not follow us to Cambria Math and Times New
+Roman, on another operating system, in another font family.
+
+**It is not a version regression.** An earlier version of this entry claimed
+Chromium 148 was clean and 151 broken. That table was wrong and is the reason
+this entry was rewritten. The "clean" engine was an embedded browser that ships
+almost no fonts, so it silently fell back to a plain serif and never rendered
+STIX at all. It was not a newer engine breaking a radical; it was two engines
+drawing two different fonts. STIX breaks in 148 too.
+
+**What the mechanism appears to be.** Chromium paints the arm of the radical
+from the font's glyph and then draws the overbar itself as a rule, and the
+break is those two disagreeing by a fraction of a pixel. Two measurements
+support this. Sweeping the radicand height from 10px to 200px, the glyph's
+advance width never moves off 109.1px, so the radical stretches by a glyph
+assembly rather than by wider size variants — the engine is compositing, not
+picking one drawn glyph. And the size of the break tracks the font's arm
+thickness rather than anything about the formula. It follows that the mismatch
+is resolution-dependent, which is why Windows breaks *differently* rather than
+not at all, and why zoom level can change the verdict on a given row.
+
+**The radicand's height is not the cause, so do not try to fix this by making
+formulas shorter.** Tested directly, because it is the intuitive suspect. In
+the starter deck's own quadratic formula the `b²` raises the radicand from
+64.4px to 84.3px, but the msqrt box stays at 113.8px — the *minimum*,
+single-glyph size — exactly as it is for a flat `b − 4ac` and for four other
+radicands. Same glyph, same size, same position, same bar. Only a fraction
+inside the root (radicand 159.7px, box 220.3px) actually stretches it. The
+radical in `√(b²−4ac)` is pixel-identical to the one in `√(b−4ac)`, so the
+exponent cannot be raising the bar.
+
+**The mitigation, documented and not shipped.** Scoping a non-maths font to the
+radical only, and putting the contents back:
+
+```css
+.bento-el math msqrt { font-family: serif; }
+.bento-el math msqrt * { font-family: math; }
+```
+
+The second rule is what makes it viable: it keeps the whole formula in the
+maths font and swaps only the glyph that is drawn wrong. A blanket `serif` on
+the formula is not an option — it collapses stretchy delimiters (a tall `(`
+measured 315px in the maths font and 94px in serif) and shrinks large
+operators.
+
+Verified clean on macOS/Chrome, where it swaps STIX's radical for the serif
+one. **It is not shipped because it does not hold on Windows**, where `serif`
+is Times New Roman and the break is smaller but still there. It trades one
+rounding mismatch for another, and a fix that only works on the author's own
+machine is worse than a known defect. If a font is ever found that joins
+cleanly on both platforms, this rule is the shape the fix should take — scoped
+to `msqrt`, contents restored to `math`. Note also that the stack matters: on
+Windows `'Cambria Math', serif` selects what generic `math` already selects, so
+that variant is a no-op there.
+
+`slides/probe/radical-join.html` is the cross-platform test rig:
+one row per candidate font applying exactly the rule above, each row reporting
+whether the font actually resolved, and a paste-back block carrying platform,
+UA and DPR.
+
+**If it ever becomes worth fixing on our side**, the only route that bypasses
+the engine's radical painting is drawing the hook and bar ourselves — an
+`<mo>√</mo>` plus a CSS rule for the bar, overlapped so the join cannot
+separate at any DPI. That costs the semantic `msqrt` (accessibility, and the
+morph would need the bar tagged as its own symbol), and an earlier hand-built
+approximation still showed problems, so it needs verifying in the affected
+engine before anyone commits to it.
+
+**How this went wrong, which is the part worth keeping.** Six or more confident
+wrong answers were reported before the right one, every one from an instrument
+that lied:
+
+- `document.fonts.check()` returns true for fonts that are NOT installed, so a
+  four-font comparison was three fallbacks wearing different labels. Control: a
+  nonsense font name — every fallback returns identical metrics.
+- A "step size" metric compared the bar against the ink just left of it, which
+  is the diagonal, not the flag. It scored a perfect radical as broken and
+  returned an identical 21px for every variant.
+- An SVG foreignObject rasteriser ignores `font-family` entirely, proven when
+  `NoSuchFontXYZ` produced byte-identical output to STIX.
+- And the one that cost the most: **every test page was judged in a browser
+  that resolved the fonts differently from the one showing the bug.** Nine test
+  matrices came back "all fine" for that reason alone, each one clearing a
+  suspect that had never actually been rendered.
+
+**The lesson: pin the environment before trusting any comparison, and prove the
+thing under test is really on screen.** Record engine, version and *resolved*
+font in the test artefact itself — a named font that silently fell back is not
+a test of that font. "It looks fine here" is not evidence until "here" is
+named.
+
+## 2026-08-28 — OPEN QUESTION: the agent-facing copy of a document is not stripped
+
+**Not a decision. A question recorded so it is not rediscovered a fourth time.**
+
+**Where it came from.** Three apps have now shipped the same clipboard bug.
+Slides put the owner private key on the clipboard; bento/spaces reintroduced it
+verbatim when it grew its own "Copy document JSON"; bento/type did it again in
+#384, where CI caught it (`scripts/test-export-secrets.ts`, the rig widened
+from slides-only to all four apps for exactly this reason). Every UI copy path
+is fixed and goes through a stripper now.
+
+**What is still unstripped is the path we ask AI agents to use.** CLAUDE.md
+tells tooling that the document is the interchange unit and points it at
+`#bento-doc` and the `window.bento` API. An agent doing precisely what we
+invited it to do — read the document, paste it into a chat model — hands over
+`collab.ownerPriv` and the room read key. Same exposure as the button, reached
+through the path we wrote the instructions for.
+
+**The facts, measured across the four apps:**
+
+| app | `window.bento.serialize()` | `window.bento.doc` |
+|---|---|---|
+| slides | `stampInto` + `serializeFile(doc)` — the whole .bento.html | raw `store.doc` |
+| spaces | `serializeFile(store.doc)` | raw `store.doc` |
+| dash | `serializeFile(store.doc)` | raw `store.doc` |
+| type | `JSON.stringify(store.doc)` | raw `store.doc` |
+
+**Two things that are NOT the bug, so nobody spends a day on them:**
+
+1. **`serializeFile` carrying credentials is correct.** It produces the saved
+   working file, and the file IS the capability — opening a copy auto-joins the
+   room. Stripping it would break saving. The rig already records `serialize()`
+   as its one legitimate caller.
+2. **`window.bento.doc` is not an escalation.** Any script running in the page
+   already has the document. The API grants nothing new.
+
+**And one reason a narrow fix will not close it:** stripping `serialize()`
+alone changes nothing, because the `#bento-doc` block inside the file carries
+the whole document anyway. An agent reading the file gets the credentials
+without touching the API.
+
+**So the question is about defaults and documentation, not a code defect.**
+Options, none chosen:
+
+- Leave it. The file is the capability; anyone handling the file handles the
+  keys, and that is already true of emailing a deck.
+- Say so in the agent-facing guidance: paste a stripped document, never the raw
+  one, and name the function.
+- Give the platform a stripped accessor — `window.bento.docForExport()` — and
+  point the tooling note at THAT, so the convenient path is the safe one. This
+  is the shape that has worked everywhere else: the leak keeps recurring
+  because the obvious call is the unsafe one.
+- Widen the rig again. It currently inspects `about.ts`, `main.ts` and
+  `editor.ts` only, so a leak in any other file of an app is invisible to it.
+
+**Whoever settles this: it is a platform decision across four apps.** It was
+raised from the bento/type branch during #384 and deliberately NOT decided
+there, which was the right call — a single app's feature branch is the wrong
+place to set a cross-app default.
+
+## 2026-08-28 — bento/spaces: the `canvas` block, and where a card's position lives
+
+**The type.** `canvas` is a bounded surface holding cards you place by hand —
+a storyboard, a roadmap, a mind map. The format shape below is permanent from
+the moment the type ships, because there is no server to migrate a file
+somebody already has (PLATFORM §3).
+
+### The shape
+
+```jsonc
+{ "id": "b1", "type": "canvas",
+  "html": "Launch storyboard",   // the surface's NAME, and its fallback
+  "ratio": 1.6                    // width ÷ height; ABSENT = 1.6
+}
+```
+
+**A card is a BLOCK, not an entry in an array on the canvas.** The canvas is
+`container: 'always'` in the registry, so it owns the blocks whose `parent` is
+its id — exactly as a callout and a toggle do. A card adds two flat fields and
+nothing else:
+
+```jsonc
+{ "id": "b2", "type": "p", "parent": "b1", "x": 29, "y": 8, "html": "Review with the team" }
+```
+
+`x` and `y` are PERCENTAGES of the surface, one decimal place, clamped to
+0–100 at read time. A card with no coordinates is not an error: it takes a
+deterministic slot from its index among its siblings, so two readers of one
+file lay it out identically and `{"type":"canvas"}` with three bare paragraphs
+under it is a hand-writable canvas.
+
+A card's TYPE is any block type. `p` is a text card; `pagelink` is a card that
+opens a page in the space, which is what lets a canvas be a map OF the space
+rather than only a sketchpad. Nothing new was needed for either.
+
+### Why cards are blocks and not an array
+
+Three reasons, in ascending order of how permanent the mistake would have been.
+
+1. **An array is a second place text lives.** Every word in a space is some
+   block's `html` — canonicalised by one sanitizer, found by ⌘F, back-linked by
+   `buildIndex` because it reads `html`, exported by one markdown pass. Text
+   inside `canvas.cards[]` is none of those things, and each one would have to
+   be taught about the array separately.
+2. **An array degrades badly.** `renderBlocks` resolves a child against the
+   OPEN CONTAINER STACK, and an unknown type opens no container — so on a build
+   that has never heard of `canvas`, every card falls out to the top level and
+   renders as the paragraph or page card it already is, under the canvas's own
+   name. Measured against the pre-change shell: the page reads "Launch
+   storyboard" followed by each card as an ordinary paragraph, and the `x`/`y`
+   it cannot use round-trip untouched. Cards in an array would show as the
+   canvas's `html` and nothing more — unless the html duplicated all of it,
+   which is the price `table` pays and did not need to be paid again.
+3. **An array loses edits under collaboration.** model.ts already states the
+   rule: properties are flat because each (node, key) pair is one LWW register.
+   `cards` as one array is ONE register, so two people dragging two different
+   cards keep one of the two moves, silently. As blocks, each card is its own
+   CRDT node and `x`/`y` are its own registers, and both drags land.
+   `table.rows` has exactly this limitation and documents it; there was no
+   reason to take it on again where the alternative is strictly simpler.
+
+Because the cards are separate blocks that an old build renders on its own, the
+canvas's `html` is its NAME and must never repeat them — the opposite of
+`tableFallbackHtml`, which has to hold the cells' text because a table's cells
+are not blocks. The markdown export follows: a canvas exports as `**name**`
+and its cards arrive as their own lines.
+
+### Why percentages, and why `ratio` is document data
+
+Percentages, not pixels: the same file is read at 320px and at 2560px and
+printed on A4, and a layout in px is a layout that is right at exactly one
+width. Not an abstract 1000-unit grid either — that is a percentage with a
+scale factor bolted on, and the renderer would have to know the factor forever.
+A percentage needs nothing: `left: calc(var(--sp-x) * 1%)`.
+
+`ratio` has to be in the document rather than a reader-side default, because
+the cards' `y` is relative to it: a canvas laid out on a 1.6 surface and read on
+a 1.0 one is a different picture. It is stored as an ABSENT key when it is the
+default (the `editView` discipline), so a canvas cycled Wide→Square→Tall→Wide
+is byte-identical to one nobody touched.
+
+Below 560px the surface renders as a stacked list of its cards, positions
+ignored. That is a RENDERING choice made in the stylesheet, not a change to the
+file — four cards on a 360px board are four unreadable stamps, and the same
+document lays out spatially again on the next screen up.
+
+### Names reserved, so a follow-up does not have to guess
+
+- Card SIZE is `cw`/`ch`, in the same percentage units. **Not `w`/`h`** — an
+  image block already carries its intrinsic pixels in those, and an image is a
+  perfectly good card.
+- CONNECTORS belong on the canvas block as `links: [{ from, to }]` of card ids.
+  A relation is not a property of either end.
+- NESTING needs nothing: a canvas inside a canvas is a card whose type is
+  `canvas`, and the container stack already supports it.
+
+None of the three is built. All three are additive.
+
+---
+
+## 2026-08-28 — a graph view is a DRAWING, and derived state is never stored
+
+Settled while building `spaces/src/graph.ts` (bento/spaces graph view). Written
+down because the next app to want a picture of its own data will face the same
+three forks, and because two of these are platform-shaped rather than
+spaces-shaped.
+
+**1. Derive at open; store nothing.** The graph is built from
+`buildIndex().backlinks` and `Page.parent` when the overlay opens, and dropped
+when it closes. There is deliberately no `doc.graph`, no saved node positions
+and no second link scanner. A stored layout is meaningless to the next reader's
+window size, and a second scanner is a second answer to "what links to this
+page" — the one question the backlink index exists to answer. The precedent
+cuts the same way as `SpaceIndex` itself: *derived, NEVER stored*.
+
+**2. A viewer preference is read the same way in every app.** Reduced motion
+here reads localStorage `bento-reduce-motion` first and the OS
+`prefers-reduced-motion` second — character for character the rule
+`slides/src/present.ts` set, and the rule the theme and the locale already
+follow (PLATFORM §8). An app that invents its own motion preference makes the
+suite two products.
+
+**3. An animation needs a wall-clock settle guarantee, not just a rAF loop.**
+`requestAnimationFrame` is throttled to ZERO in a hidden or occluded tab. The
+graph's reveal interpolates from a spiral toward a settled layout while the
+camera is framed against the FINAL positions, so a starved rAF does not merely
+fail to animate — it leaves the picture frozen halfway and off-centre, which
+reads as a broken feature. Measured in exactly that state, then fixed with a
+`setTimeout` that lands the final frame regardless. slides carries the same
+guarantee for entrance tweens, for the same reason, and any future app that
+animates on open needs one too.
+
+**A note on measuring this class of feature.** Nothing above was found by
+looking at the screen. The overlay carries a small debug object (`__graph`:
+node/edge counts, layout ms, `reduced`, `reveal`, `frames`) and the frozen-
+reveal bug was identified by reading `frames: 0` beside a mid-flight `reveal` —
+an instrument on the DECISION, not a sample of the result. The rig's graph
+assertions were each made to fail on purpose before being trusted (twelve
+deliberate mutations; two assertions were too weak and were tightened, one of
+them a threshold that passed both with and without the behaviour it claimed to
+test).
+
+## 2026-08-28 — bento/spaces: a table column sorts, a title column does not
+
+The Bases table became editable and sortable in place: a column header cycles
+ascending → descending → none, and a cell opens the same picker the page's own
+header strip opens.
+
+Two things settled that another agent could otherwise contradict.
+
+**Unsorted DELETES the key.** The header writes the view's existing `sort`
+through the existing `editView`, and the third click passes `undefined` so the
+key is removed rather than stored as `[]`. A view sorted and unsorted from its
+header is byte-identical to one nobody ever touched. `cycleSort` in fields.ts is
+where that third state lives, so it is one function rather than a rule the two
+sort controls each have to remember.
+
+**The page-title column is NOT sortable, deliberately.** A view's `sort` names a
+FIELD: `sortRows` looks each key up in `doc.fields` and skips what it cannot
+find, and `unknownSortKeys` reports the miss as "newer than this build". A
+pseudo-key like `{key:'title'}` would therefore be a key EVERY shipped build
+reports as unreadable and does not apply — and teaching `sortRows` about a
+non-field key means a second ordering mechanism living beside the first, in a
+format where both are permanent. One order stored in two shapes is the thing
+that later disagrees with itself. The column is a plain `<th>` and does not
+pretend otherwise. If title order is wanted later, the honest shape is a real
+field, not a special case in the sorter.
+
+**A cell edit can CREATE the prop block**, the way a board drop already could:
+`editor.putField` is the one place a page gains a field, and it goes through
+`propBlock`, so the readable `html` is written with the value. A table column
+exists because SOME row carries that field; the rows that do not get an empty
+cell, and editing it is how the field arrives on that page.
+
+The picker was split from `openFieldPicker` into `fieldPicker(f, cur, anchor,
+write)` — a picker over a WRITER rather than a block id, because a cell can
+stand for a value that has no block yet. The header strip, the board's card chip
+and a cell are now one control with three writers, not three controls.
+
+## 2026-08-28 — two size mechanisms, and why deleting either loses a regression
+
+**Both stay.** #279 added an advisory PR build-size comment while
+`scripts/test-spaces-size.mjs` already measured shell size in CI. That looks
+like duplicated measurement and it is not, so this entry exists to stop the
+next person tidying one away.
+
+**They answer different questions.**
+
+| | the CI rig (size-budgets.json) | the PR comment (#279) |
+|---|---|---|
+| measured against | a committed `reference`, or a `max` ceiling | the PR's own base commit |
+| horizon | absolute, persistent, across all history | relative, one PR |
+| can fail a build | yes, when `enforce:true` | never, advisory only |
+| catches | SLOW drift — forty merges at 300 B each | a single change's jump |
+| blind to | which change caused it | accumulated drift; every PR looks fine |
+
+The second row is the whole point. Forty merged commits costing 300 bytes each
+is 12KB nobody chose, and **every one of those PRs shows a harmless +300 in its
+comment**. Only a number compared against a fixed point sees it. Equally, the
+rig can say a shell grew 12KB since the reference but not which PR to blame;
+the comment can. Neither is redundant.
+
+**Two real defects were found while reconciling them, both silent.**
+
+1. **Only bento/spaces was ever registered.** `size-budgets.json` listed one
+   shell, so slides and dash had NO persistent size record at all. The rig has
+   always been generic — it walks every entry — it just had nothing to walk.
+   Both are now registered as `enforce:false` watermarks.
+2. **dash was structurally unmeasurable.** The CI step sat in the spaces
+   section, *ahead of the dash build*, and the rig SKIPS a shell that is not
+   built — so it printed `skip dash — not built` and moved on. A guard that
+   reports "nothing to do" in a passing build is invisible. The step now runs
+   after all three builds.
+
+**Why watermarks and not ceilings for the two new entries.** Same reason spaces
+gave up its own: at 98.6% of its limit it had started declining worthwhile
+fixes, which is the ceiling costing more than it saves. And a ceiling picked
+with no history behind it is a guess that fails somebody else's PR. Growth
+still has to pass a human, because the number is printed every run.
+
+**References come from CI, never a local build.** Most of a shell is one
+deflated block and zlib's output differs across node versions — one commit
+measured 130,095 B on node 26 locally against 131,246 B on CI's node 24. When
+the two disagree, believe CI.
+
+**Naming, left alone deliberately.** `test-spaces-size.mjs` now covers three
+shells and the name undersells it, but it is invoked by name from
+`scripts/test-spaces.mjs` and referenced in this log, and renaming it was more
+churn than the overlap warranted. The file's own header says it is generic.
+
+## 2026-08-29 — five rigs reported passes for work they were not doing
+
+**A green rig is an instrument, and these lied.** The same family as the
+"instruments that lie" list in `CLAUDE.md` — a transform read back from an
+inline element, rAF in a hidden tab, a DOM sampler polling mid-animation — with
+one difference that makes it worse: those instruments were consulted
+deliberately by someone who suspected a problem. A rig is consulted by CI, on
+every push, by people who have stopped suspecting anything.
+
+**The findings, verified against the tree and PR #399's diff on 2026-08-29.**
+Five rigs across four zones, found within one day of each other:
+
+| rig | what it reported | what was true |
+|---|---|---|
+| `test-tray-bridge.ts` | **52/52 pass** | the #277 arbitrary-write fix was DELETED; its shape checks pinned the `<a download>` call site, the NEIGHBOUR of the fix, while `exportCopy`'s `safeFileName` gate and path-containment guard were read by nothing |
+| `test-tray-index.mjs` | "absent, skipped", in green, **for weeks** | the tray→home rename moved the corpus and the path did not; **eleven cases** went untested |
+| `test-doc-index.mjs` | never ran | unregistered in CI, and the same rename left it importing `../tray/doc-index.mjs` |
+| `test-spaces.mjs` | never ran | unregistered **from the day it was written** |
+| `test-slide-store.ts` | never ran | never registered |
+
+**Two distinct failure modes, and the second is quieter.** A rig can assert the
+wrong thing — pinning code adjacent to the fix rather than the fix. Or it can
+assert nothing at all while still printing a pass, because its input moved or it
+was never wired to CI. The second is harder to notice precisely because there is
+no wrong assertion left to be wrong. #399's own comment on `test-doc-index.mjs`
+puts it best: **a rig nobody runs cannot report its own import failure.**
+
+**Presence is not the property; ordering is.** The load-bearing check added to
+`exportCopy` is not that `safeFileName` and the containment guard exist — both
+can exist and still run AFTER the write. It asserts
+`indexOf('write(to: tmp)') > indexOf('hasPrefix(')`. This is the part that
+transfers to any rig: a guard's presence is cheap to assert and frequently
+means nothing.
+
+**The check adopted, which costs two minutes:** delete the guard the rig exists
+to protect, run the rig, and watch. If it still passes, the rig is reading
+something adjacent to the fix. **Do it when you write the rig, not after someone
+reverts it.** Measured, not assumed: `exportCopy` gained FOUR checks and THREE
+of them fire on the revert that was actually run (53/56). That gap is the point
+rather than an embarrassment — four independent assertions, not one assertion
+spelled four ways, and the one that stayed silent did so because of how those
+particular guards were stripped.
+
+**A skip that protects nothing costs the whole check.** `test-tray-index.mjs`
+skipped a missing corpus for a good reason — it arrived with the Android work,
+and a rig that fails until an unrelated branch lands is a rig people learn to
+ignore. The reason expired when the corpus landed and the skip did not. A path
+that is SUPPOSED to exist is a failure when it does not, and a rig must
+distinguish ABSENT from MOVED.
+
+**And the practice is now enforced, not just recommended.** A two-minute habit
+decays; the same PR adds the mechanical half. `scripts/test-spaces.mjs
+--manifest` runs in CI and asserts the list both ways — every `test-spaces-*`
+file on disk is listed in `RIGS`, and every rig in `RIGS` has a step in the
+workflow — failing with **"A rig nobody runs is not a rig. Add a step for each,
+or remove it from RIGS."** Read that beside the diagnosis above and the pair is
+the whole entry: one line names the failure, the other refuses to let it recur.
+Both halves are the point. A rig that catches this class of defect is worth more
+than a paragraph asking people to remember it, and any app growing a rig suite
+should copy the manifest check rather than the habit.
+
+**Status.** PR #399 (branch `ops-rig-repairs`) is in flight as this is written;
+it registers the unrun rigs, closes the two mis-asserting ones, and adds the
+manifest check. The findings above are properties of the tree at `220f7e7` and
+stay true whatever shape that PR lands in.
+
+**Attribution, corrected once in the writing of this entry.** The two
+`test-tray-*` findings are bento-team-home-ios's, with bento-team-home-android
+hitting the same class from the other side. The three unrun rigs and both quoted
+lines came through #399 and are **bento-team-ops'** — an earlier draft of this
+paragraph credited the whole finding to home-ios, which was wrong. Worth
+recording how it was settled, because it will come up again: `git log` cannot
+answer it. Every session on this repo commits as the maintainer, so authorship
+metadata resolves to one person for all of us; the zone and the branch are the
+only evidence that distinguishes anybody. Cite the PR, which is checkable, over
+the session, which is not.
+
+**The `CLAUDE.md` counterpart is not discharged by this entry.** The two-minute
+check belongs in the file people read BEFORE writing a rig; this log is what
+they read after wondering why a standard exists. That text is queued for the
+maintainer.
+## 2026-08-29 — the locale list leaves the prose; docs point at LOCALES
+
+**The rule that named the languages was wrong for a month and cost a shipped
+app a language.** `AGENTS.md` rule 6 listed seven catalogues (ja, zh-Hans,
+zh-Hant, es, fr, de, it) and `CLAUDE.md` said "7 locales"; Portuguese was added
+2026-07-25 and the docs did not follow. PR #394 added `type/src/i18n/` with
+seven catalogues and no `pt.ts`, and hard-coded the seven-locale list into its
+new build script. That session followed the written rule exactly. The rule was
+the defect.
+
+**So no document states the list any more.** Rule 6 and the `CLAUDE.md` i18n
+entry now name where the list lives — `LOCALES` in the app's
+`scripts/build-*-i18n.mjs`, with `ls <app>/src/i18n/` as the check — and carry
+the failure story, because a rule without one gets deleted by whoever finds it
+inconvenient. A count in prose is verified by nothing and is the only copy that
+can rot unnoticed; every other copy is load-bearing and fails visibly.
+
+**Three copies, not one, and the number is growing.** Adding a locale touches
+the catalogue file, the app's `LOCALES`, and any rig holding its own list.
+Saying "point at the build script" is true and incomplete: it leaves a rig's
+copy stale, which is what goes red. Measured on 2026-08-29:
+
+| | slides | spaces | type (#394) |
+|---|---|---|---|
+| `LOCALES` in build script | 8 | 8 | 7 |
+| catalogue files | 8 | 8 | 7 |
+| extra-file guard | **yes** | no | no |
+| rig with its own list | no | no | **yes** |
+
+**Only `build-i18n.mjs` errors on a catalogue missing from `LOCALES`.** On
+spaces and type, adding a catalogue without touching `LOCALES` exits 0, prints
+its locale count, and silently never packs the file — a translation that ships
+to nobody, announced by nothing. That is worse than a red build. Porting the
+guard to the sibling scripts is queued with ops and is not done here.
+
+**A rig must derive the list, never restate it.**
+`scripts/test-i18n-coverage.mjs` already does the right thing: it parses
+`PACKED_LOCALES` out of the generated `packed.ts`, so it cannot disagree with
+the build. #394's `test-type-i18n.ts` hard-codes a second list instead. The
+existing rig is the pattern to copy; a derived list is a copy that cannot rot.
+
+**Not fixed, deliberately:** this log's 2026-07-24 entry says "App UI i18n
+(7 locales)". It was true when written — one day before the entry that added
+Portuguese — and this log is append-only. It stays. Anyone grepping for stale
+counts will hit it; that is the cost of an honest record, not a defect.
+
+**The general rule, because this is not really about locales.** A count in
+prose is verified by nothing. Three files stated one today — `AGENTS.md`,
+`CLAUDE.md`, `docs/PARALLEL-WORK.md` — all three were true when written, all
+three went stale in silence, and one of them cost a shipped app a language.
+**Name the mechanism, never its current output:** the mechanism survives edits,
+the output has a half-life. That extends to this log — an append-only entry
+cannot be corrected, so a number belongs in one only when it is FROZEN. The test
+before writing one down: *could this change without the entry becoming wrong?*
+
+**A number is frozen by its framing, not by its value.** "Eleven cases went
+untested" is safe: it reports something that already happened and stays true
+forever. The same figure asserted as a standing fact — "there are eight
+catalogues" — is not, because the next locale makes it a lie nobody can edit.
+The table above says 8 twice and is safe for exactly this reason: it is stamped
+`Measured on 2026-08-29` and says the number is growing, so it reads as a
+reading taken at a moment rather than a claim about the present. Date a
+measurement and it becomes evidence; leave it undated and it becomes a fact with
+an expiry nobody sees. **The rule is not "avoid numbers" — that is unusable
+advice — it is "never write one that is still claiming to be current."**
+
+This is the same failure recorded elsewhere today from the rig side — a
+statement that was true when written, went stale without a sound, and had
+nothing checking it. Documentation and a green test suite fail identically here,
+and for the same reason: both are instruments, and an instrument nobody
+calibrates is believed longest.
+
+## 2026-08-29 — OPEN QUESTION: `pt` is two different languages in the suite
+
+**Not a decision. A question recorded because no rig can ask it.**
+
+**The facts, counted on 2026-08-29.** Both files are named `pt.ts` and both are
+correctly named, so every mechanical check passes:
+
+| | `arquivo` | `ficheiro` | `tela` | `guardar` | header declares |
+|---|---|---|---|---|---|
+| `slides/src/i18n/pt.ts` | 47 | 10 | 33 | 4 | Portuguese (**Brazilian**), explicit pt-BR terminology policy |
+| `spaces/src/i18n/pt.ts` | 9 | 58 | 3 | 7 | "Portuguese", no policy |
+
+So slides is Brazilian by declaration and spaces drifted European, under one
+locale code. A user running the suite in Portuguese meets two vocabularies.
+`type` followed slides while adding its catalogue and normalised the strings it
+reused.
+
+**The intent was Brazilian, but it was never written as a rule.** The
+2026-07-25 bundling entry adds Portuguese "because Brazil has a real
+English-proficiency gap"; `slides/src/i18n/pt.ts` states a pt-BR policy in its
+header and notes that European Portuguese "deserves its own catalog later".
+Neither is a suite-wide policy, and `spaces/` shows what happens without one.
+
+**Why this cannot be a rig.** The drift is vocabulary under an identical locale
+code. There is no signal to assert on short of a term blocklist per variant,
+and even that is not sufficient: bento/type reports that one reused string
+passed a `ficheiro`/`guardar`/`ecrã` sweep while remaining European in
+construction ("cada vez que guarda", "num computador") and had to be rewritten
+by hand. **A term-level sweep is not a conversion.**
+
+**Not clean anywhere, which is why this is a question and not a cleanup.**
+Slides violates its own stated policy 10 times (`ficheiro`) plus `guardar` and
+`ecrã`. Settling the question means retranslating a catalogue, which is
+translation work and a maintainer's call, not a documentation change.
+
+**What is actually being asked**, so it is not rediscovered:
+
+1. Is bundled `pt` pt-BR for the whole suite? The recorded reasoning says
+   Brazil, and two of three catalogues follow it.
+2. If yes, `spaces/src/i18n/pt.ts` needs converting by hand and every catalogue
+   should declare its variant in its header the way slides does.
+3. Does European Portuguese become a downloadable pack (`pt-PT`), which is what
+   the slides header anticipates and what the pack tier exists for?
+
+Until it is answered, **a new catalogue for a language with regional variants
+should state its variant in its header** and follow the sibling app that
+already declares one.
+
+## 2026-08-29 — a green local rig run can mean half the rig never ran
+
+*Neighbour to "five rigs reported passes for work they were not doing" above,
+and a DIFFERENT failure. Those rigs were broken everywhere, CI included —
+unregistered, or reading a path their corpus had moved off. This one is wired up
+and runs correctly in CI; it is only on a developer's machine that it quietly
+runs half of itself. If you are here because a rig lied, that entry is the one
+about rigs that never ran at all.*
+
+**`scripts/test-sanitize.ts` has two halves.** The node half imports the pure
+functions — `sanitizeSvgCss`, `svgAttrAllowed`, `SVG_TAGS` — and runs anywhere.
+The browser half drives real Chrome, because the parts it tests need a DOM.
+Where there is no Chrome it says so and skips, and the run still ends green.
+
+**So a pass locally does not tell you the thing you edited was tested.**
+`sanitizeSvg` needs a DOM, which means it is covered ONLY by the browser half.
+A change to it can pass five rigs on a laptop and be caught by CI a minute
+later, which is exactly what happened to the svg `<style>` scoping change: five
+rigs green locally, `✗ the svg <style> is kept` in CI.
+
+**The rule: run the rig that covers the file you edited, and check which half of
+it ran.** Not how many rigs passed — which ones, and whether the half that
+covers your change was one of them. A skip that prints like a pass is an
+instrument that lies, and this repo already keeps a list of those: a CSS
+transform on an inline element that reads back correctly and moves nothing;
+`document.fonts.check()` returning true for a font that is not installed; rAF
+throttled to zero in a hidden tab; an SVG rasteriser that ignores
+`font-family`. This is the same family — the instrument answers a question you
+did not ask.
+
+**The first version of this finding was wrong, and the correction is the
+useful part.** It was filed as "`sanitizeSvg` has no rig coverage", which is
+false — the coverage exists and it works. "Your green local run may have
+skipped it" is both true and actionable; "there is no coverage" would have sent
+someone to write a rig that already exists.
+
+## 2026-09-04 — CORRECTION: #394 was the fix, not the casualty; dash is short
+
+**Supersedes one factual claim in the 2026-08-29 entry "the locale list leaves
+the prose; docs point at LOCALES".** That entry stands in every other respect —
+the rule, the three copies, the guard table, the framing test. This corrects who
+was hurt, because the entry named the wrong app and the true one is worse.
+
+**What the earlier entry said.** That PR #394 "added `type/src/i18n/` with seven
+catalogues and no `pt.ts`", and `AGENTS.md` rule 6 said #394 "shipped an app one
+language short because it believed" the stale rule.
+
+**What is true.** #394 was OPENED carrying seven; it was flagged while open; its
+session added the eighth; and it MERGED with `pt.ts` present. `git log
+--diff-filter=A -- type/src/i18n/pt.ts` returns exactly one commit — `4f073a3`,
+which is #394 itself, titled "bento/type: autosave, thumbnails, eight languages,
+and two panel bugs". **#394 is the case where the process worked.** Citing it as
+the casualty inverted it.
+
+**The real casualty is `dash`, and it is still short today.** Measured on
+`origin/main` = `3f2c734`:
+
+| app | `PACKED_LOCALES` | `pt.ts` |
+|---|---|---|
+| slides | 8, incl. `pt` | present |
+| spaces | 8, incl. `pt` | present |
+| type | 8, incl. `pt` | present |
+| **dash** | **7, no `pt`** | **absent** |
+
+**And the cause is a fourth copy of the list, in a file doing double duty.**
+`scripts/test-dash-i18n.ts:48` is `['ja','zh-Hans','zh-Hant','es','fr','de','it']`
+— and `dash/src/i18n/packed.ts` declares itself "GENERATED by
+scripts/test-dash-i18n.ts". So dash's i18n RIG is dash's i18n GENERATOR. It
+prints "every core catalog is complete" and that is *true* — about seven
+locales. **A generator that grades its own output cannot report a gap in the set
+it was handed**, which is why nothing caught this for six weeks. Same shape as
+the rigs recorded on 2026-08-29: a check reporting confidently on the wrong
+subject.
+
+**Why this correction exists at all, which is the part worth keeping.** The
+original claim was not measured. It came from a report that was accurate when
+written — #394 *was* short when it was opened — and I carried it into an
+append-only log without re-checking it against the merged tree, on the same day I
+wrote in that same log that a number is safe only when its framing is frozen. A
+claim about a PR has the same property: **"#394 ships seven" was a measurement of
+a moving branch, recorded as a permanent fact.** Check a PR-shaped claim against
+what MERGED, not against what was reported while it was open. Found by
+bento-team-lead, who checked it rather than repeating it.
+
+Follow-up filed for `dash` + `scripts/` (two zones): add `dash/src/i18n/pt.ts`,
+add `pt` to `test-dash-i18n.ts`, regenerate `packed.ts`. Not done here — this
+zone writes no code.
+## 2026-09-04 — reconcile COMMITS against the changelog, never the changelog against itself
+
+**A changelog cannot be proof-read for what is missing from it.** Reading the
+section tells you whether the entries present are well written; it cannot tell
+you about a change that has no entry, because there is nothing there to catch
+your eye. The only direction that finds a gap is the other one: walk
+`git log <last tag>..main` and ask, of each commit, which entry covers it.
+
+**The evidence, from one release cycle.** Every gap found in the run-up to this
+cut was found that way, and none was found by anyone reading the file:
+
+| gap | how big |
+|---|---|
+| the eight phone/touch PRs (#271–#292) | the release's headline feature — bento/slides was unusable on a phone before it |
+| #402, svg style scoping | landed after the section was last reconstructed |
+| #366, sticky move after a fast click | a SILENT document mutation, and not phone-specific |
+| #294 / #295, phone chrome | uncovered entirely |
+
+The section had been read carefully several times in between. It went from 12
+entries to 18 under a check that reads no prose at all.
+
+**Two rules the exercise produced, both of which cost something to learn.**
+
+**A commit subject is a claim about a branch, not about what shipped.** The one
+commit in this cycle correctly absent from the notes is the first-party pptx
+importer: it lands in the kernel and nothing in `slides/src/main.ts` reaches it,
+so a note would promise an importer a user cannot find. Its subject line says a
+pptx importer shipped, and believing the subject would have produced a false
+entry. Re-check it at each cut — the day it gets a menu item it needs a line.
+The same shape cost a retraction elsewhere in this log on the same day — see
+the 2026-09-04 entry "CORRECTION: #394 was the fix, not the casualty" — where a
+fact true of a PR while it was open was recorded as a fact about the tree.
+
+**Whether a fix earns its OWN entry is a different question from whether it is
+covered at all.** Split a fix out when its damage is INVISIBLE — #278 (a pinch
+committing a move) and #366 (a click committing a move) both got their own
+lines, because someone whose deck quietly lost its layout will scan for exactly
+that and find nothing if it sits inside a paragraph about something else. A
+VISIBLE defect can be described where it naturally falls: #274's unreachable ⋯
+stayed inside the phone entry, whose subhead already leads with it, because
+anyone who hit it knows what they hit. But "notable" does not mean "invisible" —
+#294 and #295 are visible, earn no line of their own, and still needed covering.
+
+**Placement follows the reader, not the code.** #366 is a race between a click
+and a render, so it bites slow hardware of any kind; filed under the phone
+entry, a desktop user would have read the neighbouring pinch entry, seen
+"phones, two fingers", and concluded it was not their bug. The entry says
+outright that it is not about phones, and that sentence is what makes it
+findable by the person who needs it.
+
+**Do this before every cut, not when someone remembers.** Release notes ride
+inside the SIGNED update manifest and the channel refuses to re-sign a version,
+so an entry missing at the cut cannot be added afterwards — the check has one
+chance to run and it is cheap. Reconciliation for this cycle: 41 commits, 40
+mapped, 1 correctly absent, run by bento-team-slides.
+
+Claude-Session: https://claude.ai/code/session_01Jcfdy8A69nonyATtm8vRy8
