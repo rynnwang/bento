@@ -351,7 +351,7 @@ ${PAGE_STYLES}
   .app-shell { display: flex; align-items: stretch; min-height: 100vh; }
   .sidebar {
     width: 300px; flex: 0 0 300px; background: var(--bg-elev); border-right: 1px solid var(--border);
-    display: flex; flex-direction: column; padding: 20px 14px; box-sizing: border-box;
+    display: flex; flex-direction: column; padding: 12px 14px; box-sizing: border-box;
     position: sticky; top: 0; height: 100vh; overflow-y: hidden; min-width: 180px; max-width: 480px;
   }
   /* drag-to-resize handle — a thin invisible strip over the sidebar's right
@@ -365,15 +365,15 @@ ${PAGE_STYLES}
   .sidebar-resize-handle:hover, .sidebar-resize-handle.dragging { background: var(--accent); opacity: 0.5; }
   /* The sidebar's own site mark, reusing /favicon.png (already cached by
      the <link rel="icon"> in <head> — same URL, so this costs no extra
-     request). Sized as a rounded "app icon" badge rather than a full-width
-     banner: the source image is a solid square block, and centering a
-     modest icon above the full-width "+ New deck" button reads as a
-     deliberate lockup instead of a stretched, oversized logo dominating a
-     300px-wide sidebar. The shadow lifts it off the ivory sidebar bg the
-     same way .card/.ctx-menu already float above the page elsewhere. */
-  .sidebar-brand { display: flex; justify-content: center; margin: 4px 0 18px; }
-  .sidebar-logo { width: 72px; height: 72px; border-radius: 16px; box-shadow: 0 6px 16px rgba(28,43,61,0.18); display: block; }
-  .new-deck-btn { width: 100%; justify-content: center; margin-bottom: 16px; }
+     request). A small badge beside the "+ New deck" button rather than a
+     centered banner above it — once the deck list has real content to
+     show, a large standalone logo block is pure overhead competing with
+     the list for the sidebar's scarcest resource, vertical space (see the
+     row-density notes below). Kept, just shrunk and folded into the same
+     row as the primary action instead of owning a row of its own. */
+  .sidebar-brand { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; }
+  .sidebar-logo { width: 28px; height: 28px; border-radius: 7px; box-shadow: 0 2px 6px rgba(28,43,61,0.16); display: block; flex: 0 0 auto; }
+  .new-deck-btn { flex: 1; min-width: 0; justify-content: center; padding: 7px 12px; }
   /* Three independent sections (Pinned / Projects / History) instead of one
      flat scrolling list: a sidebar full of pinned decks used to shove
      Projects and History further and further down, so finding either meant
@@ -390,10 +390,10 @@ ${PAGE_STYLES}
   .deck-section-history { flex: 1 1 auto; min-height: 60px; }
   .deck-section-history .deck-section-items { flex: 1; min-height: 0; }
   .deck-list-label {
-    font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
-    color: var(--text-dim); padding: 0 10px; margin: 4px 0 6px;
+    font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--text-dim); padding: 0 8px; margin: 2px 0 4px;
   }
-  .deck-list-label.gap { margin-top: 14px; }
+  .deck-list-label.gap { margin-top: 10px; }
   .deck-section-label-row { display: flex; align-items: center; justify-content: space-between; padding-right: 4px; }
   .deck-section-label-row .deck-list-label { flex: 1; min-width: 0; }
   .project-add-btn {
@@ -406,7 +406,7 @@ ${PAGE_STYLES}
      project has no access level, no kind, no content of its own, it's
      purely an organizational folder (see store.ts's Project). */
   .project-folder-row {
-    display: flex; align-items: center; gap: 6px; padding: 6px 2px 6px 8px; border-radius: 8px;
+    display: flex; align-items: center; gap: 6px; padding: 5px 2px 5px 8px; border-radius: 7px;
     font-size: 13px; cursor: pointer;
   }
   .project-folder-row:hover { background: rgba(28,43,61,0.06); }
@@ -420,29 +420,39 @@ ${PAGE_STYLES}
   .project-folder-count { flex: 0 0 auto; color: var(--text-dim); font-size: 11px; }
   .project-folder-children { padding-left: 18px; display: flex; flex-direction: column; gap: 2px; }
   .deck-item {
-    display: flex; align-items: center; gap: 4px; padding: 2px 2px 2px 10px; border-radius: 8px;
+    display: flex; align-items: center; gap: 2px; padding: 0 2px 0 8px; border-radius: 7px;
     font-size: 13px;
   }
   .deck-item:hover { background: rgba(28,43,61,0.06); }
+  /* Title + relative time on ONE line (title flex:1 eats the space, time is
+     a fixed-width trailer that never wraps) instead of stacked on two —
+     with a real deck list this was the single biggest density win: it
+     roughly halves each row's height, so a fixed-height section (Pinned/
+     Projects cap at 220px, see .deck-section-items below) shows about
+     twice as many decks before its own scrollbar kicks in. The full title
+     and exact timestamp are still there on hover via the native title
+     attribute tooltip (see deckItemHtml) — moved off the pixel budget,
+     not dropped. */
   .deck-item-link {
-    flex: 1; min-width: 0; padding: 6px 0; color: var(--text); text-decoration: none; overflow: hidden;
+    flex: 1; min-width: 0; padding: 5px 0; color: var(--text); text-decoration: none; overflow: hidden;
+    display: flex; align-items: baseline; gap: 6px;
   }
   .deck-item .deck-title {
-    display: block; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .deck-item .deck-time { display: block; color: var(--text-dim); font-size: 11px; margin-top: 2px; }
+  .deck-item .deck-time { flex: 0 0 auto; color: var(--text-dim); font-size: 10.5px; font-weight: 400; }
   .deck-kind, .deck-status, .deck-pin-badge, .deck-password-badge {
-    flex: 0 0 auto; width: 18px; display: flex; align-items: center; justify-content: center; opacity: 0.7;
+    flex: 0 0 auto; width: 15px; display: flex; align-items: center; justify-content: center; opacity: 0.7;
   }
   .deck-pin-badge { color: var(--accent-ink); opacity: 1; }
   .deck-password-badge { color: var(--text-dim); }
   .deck-gear, .project-gear {
-    flex: 0 0 auto; width: 26px; height: 26px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
+    flex: 0 0 auto; width: 22px; height: 22px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
     border: none; background: none; color: var(--text-dim); cursor: pointer; border-radius: 6px;
     opacity: 0.6;
   }
   .deck-gear:hover, .project-gear:hover { opacity: 1; background: rgba(28,43,61,0.08); color: var(--text); }
-  .deck-list-empty, .deck-list-loading { color: var(--text-dim); font-size: 13px; padding: 8px 10px; }
+  .deck-list-empty, .deck-list-loading { color: var(--text-dim); font-size: 12.5px; padding: 5px 8px; }
   .deck-rename-row { flex: 1; min-width: 0; padding: 4px 0; }
   .deck-rename-row input {
     width: 100%; box-sizing: border-box; background: var(--bg-elev); color: var(--text);
@@ -498,10 +508,10 @@ ${PAGE_STYLES}
   .pw-modal input[type=password]:focus { outline: none; border-color: var(--accent); }
   .pw-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
   .pw-modal-actions .pw-remove { margin-right: auto; }
-  .sidebar-footer { border-top: 1px solid var(--border); margin-top: 12px; padding-top: 12px; }
+  .sidebar-footer { border-top: 1px solid var(--border); margin-top: 6px; padding-top: 6px; }
   .logout-link {
-    display: block; width: 100%; text-align: left; font-size: 13px; color: var(--text-dim);
-    background: none; border: none; cursor: pointer; padding: 6px 10px;
+    display: block; width: 100%; text-align: left; font-size: 12.5px; color: var(--text-dim);
+    background: none; border: none; cursor: pointer; padding: 4px 8px;
   }
   .logout-link:hover { color: var(--text); }
   .main-content { flex: 1; min-width: 0; }
@@ -557,9 +567,9 @@ ${PAGE_STYLES}
   <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-brand">
-      <img class="sidebar-logo" src="/favicon.png" alt="Rynn Wang" width="72" height="72">
+      <img class="sidebar-logo" src="/favicon.png" alt="Rynn Wang" width="28" height="28">
+      <button id="newDeck" class="primary new-deck-btn" type="button">+ New deck</button>
     </div>
-    <button id="newDeck" class="primary new-deck-btn" type="button">+ New deck</button>
     <div class="deck-list" id="deckList">
       <div class="deck-list-loading">Loading…</div>
     </div>
@@ -731,9 +741,12 @@ function deckItemHtml(d) {
   const kindBadge = d.kind === 'html' ? '<span class="deck-kind" title="Self-contained HTML file — stored and served as-is">' + ICONS.code + '</span>' : ''
   const pinBadge = d.pinned ? '<span class="deck-pin-badge" title="Pinned">' + ICONS.pin + '</span>' : ''
   const pwBadge = d.hasPassword ? '<span class="deck-password-badge" title="Password protected — the link alone isn\\'t enough">' + ICONS.key + '</span>' : ''
+  // Full title + exact timestamp live in the native hover tooltip — the row
+  // itself only has room for the truncated title and a short relative time.
+  const fullTitle = (d.title || 'Untitled deck') + ' · ' + new Date(d.updatedAt).toLocaleString()
   return (
     '<div class="deck-item" data-id="' + d.id + '">' +
-    '<a class="deck-item-link" href="/d/' + d.id + '" target="_blank" rel="noopener">' +
+    '<a class="deck-item-link" href="/d/' + d.id + '" target="_blank" rel="noopener" title="' + esc(fullTitle) + '">' +
     '<span class="deck-title">' + esc(d.title || 'Untitled deck') + '</span>' +
     '<span class="deck-time">' + relativeTime(d.updatedAt) + '</span>' +
     '</a>' +
