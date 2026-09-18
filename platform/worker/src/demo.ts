@@ -508,11 +508,12 @@ ${PAGE_STYLES}
   .pw-modal input[type=password]:focus { outline: none; border-color: var(--accent); }
   .pw-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
   .pw-modal-actions .pw-remove { margin-right: auto; }
-  /* Log out used to sit in its own footer row at the bottom of the
-     sidebar — moved to the main-topbar's right edge (see below) so that
-     row's height goes back to the deck list instead. */
+  /* Log out sits at the far right of main-topbar (see below) via its own
+     margin-left:auto, independent of whatever else is in that row — this
+     used to be its own footer row at the bottom of the sidebar; moving it
+     up here gave that row's height back to the deck list. */
   .logout-link {
-    flex: 0 0 auto; font-size: 12.5px; color: var(--text-dim);
+    flex: 0 0 auto; margin-left: auto; font-size: 12.5px; color: var(--text-dim);
     background: none; border: none; cursor: pointer; padding: 6px 10px; border-radius: 6px;
   }
   .logout-link:hover { color: var(--text); background: rgba(28,43,61,0.07); }
@@ -524,15 +525,22 @@ ${PAGE_STYLES}
   .menu-toggle { display: none; }
   .sidebar-backdrop { display: none; }
 
-  /* main-topbar: the search box (title+content, see searchInput's JS) and
-     Log out, replacing the old bare preview-header row at the very top of
-     the main area — freed that whole row for search instead of only
-     showing a deck's title once one happened to be open. */
+  /* main-topbar: ONE row for search, the open deck's title+actions, and
+     Log out — a first cut stacked the deck-preview bar (title/Download/
+     Open-tab/Close) as its OWN row directly under this one; two full-width
+     bars back to back read as a layout mistake, not a design (feedback:
+     "follow UX design principles and merge it into one row"). .topbar-
+     preview (below) now lives in THIS row, populated/emptied by the same
+     showPreview()/closePreview() that used to just toggle a whole separate
+     header element — see the JS. search-wrap keeps a comfortable, capped
+     width either way (flex:0 1 <basis>, allowed to shrink but not grow
+     unbounded) so a long deck title always gets priority for the row's
+     remaining space over further stretching the search box. */
   .main-topbar {
-    flex: 0 0 auto; display: flex; align-items: center; gap: 12px; padding: 10px 20px;
+    flex: 0 0 auto; display: flex; align-items: center; gap: 14px; padding: 10px 20px;
     border-bottom: 1px solid var(--border); background: var(--bg);
   }
-  .search-wrap { position: relative; flex: 1; min-width: 0; max-width: 560px; }
+  .search-wrap { position: relative; flex: 0 1 320px; min-width: 120px; }
   .search-input {
     display: block; width: 100%; box-sizing: border-box; background: var(--bg-elev); color: var(--text);
     border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; font-size: 13px;
@@ -551,6 +559,21 @@ ${PAGE_STYLES}
   .search-result-title { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .search-result-time { flex: 0 0 auto; color: var(--text-dim); font-size: 11px; }
   .search-empty { padding: 10px 8px; color: var(--text-dim); font-size: 12.5px; }
+  .topbar-preview {
+    display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0;
+    padding-left: 14px; border-left: 1px solid var(--border);
+  }
+  .topbar-preview[hidden] { display: none; } /* [class] and [hidden] tie on specificity, same trap as
+    .preview-panel[hidden] above — without this an author display:flex on an equal-specificity selector
+    beats the UA default and the "hidden" row still lays out empty */
+  .topbar-preview .preview-title {
+    font-weight: 700; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0;
+  }
+  .topbar-preview a, .topbar-preview button {
+    flex: 0 0 auto; font-size: 13px; font-weight: 600; color: var(--text-dim); text-decoration: none; white-space: nowrap;
+    background: none; border: none; cursor: pointer; padding: 4px 8px; border-radius: 6px;
+  }
+  .topbar-preview a:hover, .topbar-preview button:hover { color: var(--text); background: rgba(28,43,61,0.07); }
 
   /* main-area deck preview — a plain click on a sidebar deck link shows it
      HERE instead of only ever opening a new tab, so the main panel isn't
@@ -561,20 +584,18 @@ ${PAGE_STYLES}
   .preview-panel[hidden] { display: none; } /* [class] and [hidden] tie on specificity — author CSS beats the
     UA default either way, so without this the hidden panel still laid out full-height, empty, above the
     wizard — the "large blank area" this fixes */
-  #wizardWrap { flex: 1; min-height: 0; overflow-y: auto; }
-  .preview-header {
-    display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--border);
-    flex: 0 0 auto;
-  }
-  .preview-header .preview-title {
-    font-weight: 700; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0;
-  }
-  .preview-header a, .preview-header button {
-    font-size: 13px; font-weight: 600; color: var(--text-dim); text-decoration: none; white-space: nowrap;
-    background: none; border: none; cursor: pointer; padding: 4px 8px; border-radius: 6px;
-  }
-  .preview-header a:hover, .preview-header button:hover { color: var(--text); background: rgba(28,43,61,0.07); }
   .preview-panel iframe { flex: 1; border: 0; width: 100%; background: var(--bg); }
+  /* Widened from the shared .wrap's 880px default (pageStyles.ts, still
+     used as-is by every other page) — on a wide window that cap read as a
+     narrow column with a huge dead gutter on both sides, especially once
+     main-topbar's own full-bleed row sat directly above it for contrast
+     (feedback: "the default layout... has been narrowed"). Still capped,
+     not edge-to-edge: unbounded width would make the prompt/JSON text
+     blocks an unreadably long line to track, the exact problem a max-width
+     column exists to prevent — just a less aggressive one. #wizardWrap's
+     id beats the shared class's specificity, so only this page's wizard
+     is affected. */
+  #wizardWrap { flex: 1; min-height: 0; overflow-y: auto; max-width: 1040px; }
 
   @media (max-width: 860px) {
     .sidebar {
@@ -596,6 +617,13 @@ ${PAGE_STYLES}
     .sidebar-resize-handle { display: none; }
     .main-topbar { padding: 8px 14px; gap: 8px; }
     .logout-link { padding: 6px 8px; }
+    /* Narrow window + a deck open at the same time: prioritize the deck's
+       own title/actions over the search box rather than cramming both —
+       search is still one tap away behind Close. (:has() with no support
+       just leaves the search box visible and a bit cramped — a fine
+       fallback, not a break.) */
+    .search-wrap:has(~ .topbar-preview:not([hidden])) { display: none; }
+    .topbar-preview { padding-left: 0; border-left: none; }
   }
 </style>
 </head>
@@ -618,15 +646,15 @@ ${PAGE_STYLES}
         <input type="text" id="searchInput" class="search-input" placeholder="Search decks by title or content…" autocomplete="off" spellcheck="false">
         <div class="search-results" id="searchResults" hidden></div>
       </div>
-      <button id="logout" class="logout-link" type="button">Log out</button>
-    </div>
-    <div class="preview-panel" id="previewPanel" hidden>
-      <div class="preview-header">
+      <div class="topbar-preview" id="topbarPreview" hidden>
         <span class="preview-title" id="previewTitle"></span>
         <a id="previewDownload" href="#" download hidden>Download</a>
         <a id="previewOpenTab" href="#" target="_blank" rel="noopener">Open in new tab ↗</a>
         <button type="button" id="previewClose">✕ Close</button>
       </div>
+      <button id="logout" class="logout-link" type="button">Log out</button>
+    </div>
+    <div class="preview-panel" id="previewPanel" hidden>
       <iframe id="previewFrame" title="Deck preview"></iframe>
     </div>
     <div class="wrap" id="wizardWrap">
@@ -1359,6 +1387,7 @@ resizeHandle.addEventListener('mousedown', (e) => {
 const previewPanel = document.getElementById('previewPanel')
 const wizardWrap = document.getElementById('wizardWrap')
 const previewFrame = document.getElementById('previewFrame')
+const topbarPreview = document.getElementById('topbarPreview')
 const previewTitle = document.getElementById('previewTitle')
 const previewOpenTab = document.getElementById('previewOpenTab')
 const previewDownload = document.getElementById('previewDownload')
@@ -1374,11 +1403,13 @@ function showPreview(id, title, href) {
   previewFrame.src = href
   wizardWrap.hidden = true
   previewPanel.hidden = false
+  topbarPreview.hidden = false // shares main-topbar's row with search/Log out — see .topbar-preview
   closeSidebar() // mobile: picking a deck should show it, not leave the drawer open
 }
 function closePreview() {
   previewPanel.hidden = true
   wizardWrap.hidden = false
+  topbarPreview.hidden = true
   previewFrame.src = 'about:blank' // stop any media/animation still running in the old deck
 }
 document.getElementById('previewClose').onclick = closePreview
