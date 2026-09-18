@@ -517,11 +517,23 @@ ${PAGE_STYLES}
     background: none; border: none; cursor: pointer; padding: 6px 10px; border-radius: 6px;
   }
   .logout-link:hover { color: var(--text); background: rgba(28,43,61,0.07); }
-  /* main-content is now a fixed-height column (topbar, then whichever of
-     preview-panel/#wizardWrap is showing) instead of letting the page
-     itself scroll — the topbar needs to stay pinned while EITHER of
-     those scrolls independently beneath it. */
-  .main-content { flex: 1; min-width: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+  /* main-content: DEFAULT (wizard) mode is plain document flow — the PAGE
+     scrolls normally (the browser's own scrollbar at the true window
+     edge), main-topbar just sticks to the viewport top as you scroll
+     past it. That's deliberately NOT how it works while a deck is open
+     (see .main-content.previewing below): an <iframe> has no notion of
+     "fill the rest of the viewport" without an ancestor chain of actual
+     defined heights, so previewing needs a fixed-height flex column —
+     but forcing that treatment on the WIZARD too (an earlier cut did)
+     turned the ORDINARY, edge-of-window browser scrollbar into a second,
+     "boxed" one sitting in the middle of the page the instant wizard
+     content ran taller than the viewport — looked like a bug, not a
+     scrollbar (feedback: "still a scroll bar there, ugly and strange").
+     Toggled by the same showPreview()/closePreview() that already flip
+     the hidden attributes — see the JS. */
+  .main-content { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .main-content.previewing { height: 100vh; overflow: hidden; }
+  .main-content.previewing .preview-panel { flex: 1; min-height: 0; }
   .menu-toggle { display: none; }
   .sidebar-backdrop { display: none; }
 
@@ -535,8 +547,13 @@ ${PAGE_STYLES}
      header element — see the JS. search-wrap keeps a comfortable, capped
      width either way (flex:0 1 <basis>, allowed to shrink but not grow
      unbounded) so a long deck title always gets priority for the row's
-     remaining space over further stretching the search box. */
+     remaining space over further stretching the search box.
+     position:sticky (not the fixed-height-column trick above) is what
+     keeps this pinned during the wizard's normal page scroll; it's a
+     harmless no-op while .previewing (that ancestor no longer scrolls at
+     all, so there's nothing for "sticky" to stick within). */
   .main-topbar {
+    position: sticky; top: 0; z-index: 40;
     flex: 0 0 auto; display: flex; align-items: center; gap: 14px; padding: 10px 20px;
     border-bottom: 1px solid var(--border); background: var(--bg);
   }
@@ -580,7 +597,12 @@ ${PAGE_STYLES}
      stuck showing the create wizard forever once you have any decks.
      Ctrl/Cmd/Shift/middle-click still bypass this and open a real new tab
      (native browser behavior, never intercepted — see the click handler). */
-  .preview-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  /* flex:1/min-height:0 (making the iframe actually fill available
+     height) only apply via .main-content.previewing .preview-panel above
+     — this base rule stays plain flex-column so the panel doesn't demand
+     height it has no business claiming outside previewing mode (moot
+     today since [hidden] covers that case anyway, but correct is cheap). */
+  .preview-panel { display: flex; flex-direction: column; }
   .preview-panel[hidden] { display: none; } /* [class] and [hidden] tie on specificity — author CSS beats the
     UA default either way, so without this the hidden panel still laid out full-height, empty, above the
     wizard — the "large blank area" this fixes */
@@ -594,8 +616,9 @@ ${PAGE_STYLES}
      blocks an unreadably long line to track, the exact problem a max-width
      column exists to prevent — just a less aggressive one. #wizardWrap's
      id beats the shared class's specificity, so only this page's wizard
-     is affected. */
-  #wizardWrap { flex: 1; min-height: 0; overflow-y: auto; max-width: 1040px; }
+     is affected. No flex/height/overflow here — it's plain document flow,
+     the page scrolls it (see .main-content's own comment above). */
+  #wizardWrap { max-width: 1040px; }
 
   @media (max-width: 860px) {
     .sidebar {
@@ -1384,6 +1407,7 @@ resizeHandle.addEventListener('mousedown', (e) => {
 
 // --- main-area deck preview --------------------------------------------
 
+const mainContent = document.querySelector('.main-content')
 const previewPanel = document.getElementById('previewPanel')
 const wizardWrap = document.getElementById('wizardWrap')
 const previewFrame = document.getElementById('previewFrame')
@@ -1404,12 +1428,17 @@ function showPreview(id, title, href) {
   wizardWrap.hidden = true
   previewPanel.hidden = false
   topbarPreview.hidden = false // shares main-topbar's row with search/Log out — see .topbar-preview
+  // Only previewing needs main-content pinned to a fixed height (so the
+  // iframe has something to fill) — see .main-content's own CSS comment
+  // for why the wizard deliberately does NOT get this treatment.
+  mainContent.classList.add('previewing')
   closeSidebar() // mobile: picking a deck should show it, not leave the drawer open
 }
 function closePreview() {
   previewPanel.hidden = true
   wizardWrap.hidden = false
   topbarPreview.hidden = true
+  mainContent.classList.remove('previewing')
   previewFrame.src = 'about:blank' // stop any media/animation still running in the old deck
 }
 document.getElementById('previewClose').onclick = closePreview

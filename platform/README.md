@@ -217,6 +217,20 @@ saved locally. Full reasoning: `docs/DECISIONS.md`.
   used as-is by every other page) read as a narrow column with a big dead
   gutter on both sides once a full-bleed topbar sat directly above it for
   contrast.
+  **Two different scroll strategies, not one forced onto both states**:
+  the wizard is plain document flow (`.main-topbar` is `position:sticky`,
+  the PAGE scrolls normally, the browser's own scrollbar at the true
+  window edge) — an earlier cut instead made `#wizardWrap` itself a
+  fixed-height, `overflow-y:auto` box, which turned that ordinary
+  scrollbar into a second, "boxed" one sitting in the middle of the page
+  the moment wizard content ran taller than the viewport (read as a bug,
+  not a scrollbar). Previewing genuinely does need a bounded-height
+  layout, though — an `<iframe>` has no notion of "fill the rest of the
+  viewport" without an ancestor chain of actual defined heights — so
+  `showPreview()`/`closePreview()` toggle a `.previewing` class on
+  `.main-content` that applies `height:100vh; overflow:hidden` ONLY while
+  a deck is open; `position:sticky` on the topbar is a harmless no-op in
+  that state.
   Space-separated terms are AND'd, each term independently matched
   against a deck's TITLE OR its precomputed content ("a b" finds a deck
   where "a" and "b" each appear somewhere, in either column, not

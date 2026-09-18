@@ -121,19 +121,31 @@ Current feature set, all owner-only except where noted:
   deliberately left alone so native new-tab/window gestures still work.
   The create wizard now sits BELOW a persistent `.main-topbar` (search box
   + Log out, see the Search bullet below) rather than at the very top of
-  the main area — `.main-content` became a fixed-height flex column
-  (`height:100vh; overflow:hidden`) with the topbar as its first, non-
-  scrolling row and whichever of `#previewPanel`/`#wizardWrap` is showing
-  filling the rest (`flex:1; min-height:0; overflow-y:auto` on
-  `#wizardWrap`, since `.wrap`'s own page-level scroll no longer applies
-  once the outer column clips overflow). `#wizardWrap`'s own max-width was
-  ALSO widened 880px→1040px in the same pass, overriding the shared
-  `.wrap` class (still 880px everywhere else) by id-specificity — the
-  original cap read as a narrow column with a big dead gutter on a wide
-  window, especially once a full-bleed topbar sat directly above it for
-  contrast (feedback: "the default layout... has been narrowed"). The
-  preview's own title bar/actions do NOT have their own row at all
-  anymore — they live INSIDE `.main-topbar` too, see the Search bullet.
+  the main area. The two states this row sits above need DIFFERENT scroll
+  strategies, not one forced onto both: the WIZARD is plain document
+  flow — `.main-topbar` is just `position:sticky; top:0`, the PAGE scrolls
+  normally (the browser's own scrollbar at the true window edge) once
+  `#wizardWrap`'s content runs taller than the viewport. PREVIEWING is
+  different — an `<iframe>` has no notion of "fill the rest of the
+  viewport" without an ancestor chain of actual defined heights, so
+  `showPreview()`/`closePreview()` toggle a `.previewing` class on
+  `.main-content` that ONLY THEN applies `height:100vh; overflow:hidden`
+  (+ `flex:1; min-height:0` on `.preview-panel`) — sticky is a harmless
+  no-op in that state, nothing left to stick within. An earlier cut forced
+  the fixed-height/`overflow-y:auto` treatment onto `#wizardWrap`
+  unconditionally (simpler code, one strategy for both states) — but that
+  turned the ordinary edge-of-window scrollbar into a second, "boxed" one
+  sitting in the middle of the page the instant wizard content ran taller
+  than the viewport, which read as a bug, not a scrollbar (feedback:
+  "still a scroll bar there, ugly and strange"). `#wizardWrap`'s own
+  max-width was ALSO widened 880px→1040px in the same broader pass,
+  overriding the shared `.wrap` class (still 880px everywhere else) by
+  id-specificity — the original cap read as a narrow column with a big
+  dead gutter on a wide window, especially once a full-bleed topbar sat
+  directly above it for contrast (feedback: "the default layout... has
+  been narrowed"). The preview's own title bar/actions do NOT have their
+  own row at all anymore — they live INSIDE `.main-topbar` too, see the
+  Search bullet.
   **Projects** (`migrations/0007_projects.sql` — a `projects` table +
   `decks.project_id`, no access level/kind/content of its own, purely a
   sidebar grouping) render as collapsible folders between Pinned and
