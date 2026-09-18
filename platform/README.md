@@ -186,7 +186,8 @@ saved locally. Full reasoning: `docs/DECISIONS.md`.
   the page; now growth in one section never shoves the others out of
   reach, it just gets its own inner scrollbar.
 - **A plain click on a sidebar deck now shows it in the main panel**
-  (`#previewPanel`, a header bar + `<iframe src="/d/:id">`) instead of only
+  (`#previewPanel`, just an `<iframe src="/d/:id">` — its own title bar now
+  lives up in `.main-topbar`, see the Search bullet below) instead of only
   ever opening a new tab — before this, every deck link was
   `target="_blank"`, so the main content area never displayed anything but
   the create wizard, no matter how many decks existed. A modified click
@@ -197,9 +198,25 @@ saved locally. Full reasoning: `docs/DECISIONS.md`.
   preview's own "Open in new tab ↗" link is the explicit escape hatch for
   when the panel isn't enough (e.g. presenting).
 - **Search** (`migrations/0009_search_text.sql`'s `decks.search_text`,
-  `GET /api/search?q=`, `searchText.ts`) — a search box now owns the row
-  that used to be the preview panel's bare title bar (that bar, and the
-  wizard, both moved DOWN one row to make room — see `.main-topbar`).
+  `GET /api/search?q=`, `searchText.ts`) — a search box in `.main-topbar`,
+  the ONE row above whichever of `#previewPanel`/`#wizardWrap` is showing.
+  A first cut gave the open deck's title+actions their own SECOND row
+  directly under the search bar; two full-width bars stacked back to back
+  read as a layout mistake, not a design, so `.topbar-preview` (the same
+  title/Download/Open-tab/Close controls) now shares the search row
+  instead — `showPreview()`/`closePreview()` toggle it exactly like they
+  already toggled `#previewPanel`. `.search-wrap` keeps a comfortable,
+  capped width (`flex: 0 1 320px`) so a long deck title reliably gets
+  priority for the row's remaining space over the search box stretching
+  further; below 860px width, the search box hides itself entirely
+  whenever a deck is open (a `:has()` selector — degrades to "visible but
+  a bit cramped" on a browser without support, not a break), since a
+  phone-width row can't hold both comfortably and the deck's own controls
+  win that tradeoff. `#wizardWrap`'s own max-width was widened 880px→1040px
+  in the same pass — the shared `.wrap` class's original 880px cap (still
+  used as-is by every other page) read as a narrow column with a big dead
+  gutter on both sides once a full-bleed topbar sat directly above it for
+  contrast.
   Space-separated terms are AND'd, each term independently matched
   against a deck's TITLE OR its precomputed content ("a b" finds a deck
   where "a" and "b" each appear somewhere, in either column, not

@@ -119,15 +119,21 @@ Current feature set, all owner-only except where noted:
   is `target="_blank"` and the main area used to never show anything but
   the create wizard as a result; a modified click (Ctrl/Cmd/Shift/Alt) is
   deliberately left alone so native new-tab/window gestures still work.
-  Both the preview's own title bar and the create wizard now sit BELOW a
-  persistent `.main-topbar` (search box + Log out, see the Search bullet
-  below) rather than at the very top of the main area — `.main-content`
-  became a fixed-height flex column (`height:100vh; overflow:hidden`) with
-  the topbar as its first, non-scrolling row and whichever of
-  `#previewPanel`/`#wizardWrap` is showing filling the rest
-  (`flex:1; min-height:0; overflow-y:auto` on `#wizardWrap`, since
-  `.wrap`'s own page-level scroll no longer applies once the outer column
-  clips overflow).
+  The create wizard now sits BELOW a persistent `.main-topbar` (search box
+  + Log out, see the Search bullet below) rather than at the very top of
+  the main area — `.main-content` became a fixed-height flex column
+  (`height:100vh; overflow:hidden`) with the topbar as its first, non-
+  scrolling row and whichever of `#previewPanel`/`#wizardWrap` is showing
+  filling the rest (`flex:1; min-height:0; overflow-y:auto` on
+  `#wizardWrap`, since `.wrap`'s own page-level scroll no longer applies
+  once the outer column clips overflow). `#wizardWrap`'s own max-width was
+  ALSO widened 880px→1040px in the same pass, overriding the shared
+  `.wrap` class (still 880px everywhere else) by id-specificity — the
+  original cap read as a narrow column with a big dead gutter on a wide
+  window, especially once a full-bleed topbar sat directly above it for
+  contrast (feedback: "the default layout... has been narrowed"). The
+  preview's own title bar/actions do NOT have their own row at all
+  anymore — they live INSIDE `.main-topbar` too, see the Search bullet.
   **Projects** (`migrations/0007_projects.sql` — a `projects` table +
   `decks.project_id`, no access level/kind/content of its own, purely a
   sidebar grouping) render as collapsible folders between Pinned and
@@ -155,8 +161,16 @@ Current feature set, all owner-only except where noted:
   the explicit `min-height:0` rather than just `flex:1`.
 - **Search** (`migrations/0009_search_text.sql`'s `decks.search_text`,
   `GET /api/search?q=`, `searchText.ts`) — lives in the `.main-topbar` row
-  (see above), replacing the space the preview panel's bare title bar
-  used to occupy alone. Space-separated terms AND — each term matched
+  (see above), alongside `.topbar-preview` (the open deck's title +
+  Download/Open-tab/Close — a first cut gave those their own second row
+  under the search bar, which read as a layout mistake, not a design;
+  `showPreview()`/`closePreview()` now toggle `.topbar-preview.hidden`
+  exactly like they already toggled `#previewPanel`). `.search-wrap` is
+  `flex: 0 1 320px` — capped, but allowed to shrink — so a long deck title
+  reliably wins the row's remaining space over the search box stretching
+  further; below 860px it hides itself entirely while previewing (a
+  `:has()` selector; no-support just leaves it visible and a bit cramped).
+  Space-separated terms AND — each term matched
   independently against title OR the precomputed `search_text`, so "a b"
   can satisfy "a" from the title and "b" from the content. `search_text`
   is computed once at write time (create/`replaceDeckDoc`/
