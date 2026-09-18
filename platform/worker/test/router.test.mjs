@@ -95,11 +95,11 @@ function makeD1() {
             const [id] = boundArgs
             decks.delete(id)
           } else if (sql.startsWith('INSERT INTO decks')) {
-            const [id, title, created_at, updated_at, edit_token_hash, shell_version, doc_bytes, access] = boundArgs
-            const kind = sql.includes("'html')") ? 'html' : 'bento'
+            const [id, title, created_at, updated_at, edit_token_hash, shell_version, doc_bytes, access, search_text] = boundArgs
+            const kind = sql.includes("'html',") ? 'html' : 'bento'
             decks.set(id, {
               id, title, created_at, updated_at, edit_token_hash, shell_version, doc_bytes, access, kind,
-              pinned: 0, project_id: null,
+              pinned: 0, project_id: null, search_text,
               share_password_hash: null, share_password_salt: null, share_password_iterations: null,
             })
           } else if (sql.startsWith('UPDATE decks SET access')) {
@@ -140,9 +140,13 @@ function makeD1() {
             const row = decks.get(id)
             if (row) Object.assign(row, { title, updated_at })
           } else if (sql.startsWith('UPDATE decks')) {
-            const [title, updated_at, doc_bytes, id] = boundArgs
+            // replaceDeckDoc / replaceHtmlDeck — 4 params + id (search_text
+            // joined the doc_bytes-carrying UPDATE when search became a
+            // feature; still distinct from renameHtmlDeck's 3-param branch
+            // above by the presence of doc_bytes/search_text at all).
+            const [title, updated_at, doc_bytes, search_text, id] = boundArgs
             const row = decks.get(id)
-            if (row) Object.assign(row, { title, updated_at, doc_bytes })
+            if (row) Object.assign(row, { title, updated_at, doc_bytes, search_text })
           } else if (sql.startsWith('INSERT INTO projects')) {
             const [id, name, created_at, updated_at] = boundArgs
             projects.set(id, { id, name, created_at, updated_at })
@@ -168,8 +172,27 @@ function makeD1() {
         },
         async all() {
           if (sql.includes('FROM decks')) {
-            const results = [...decks.values()].sort((a, b) => (b.pinned - a.pinned) || (b.updated_at - a.updated_at))
-            return { results, success: true }
+            let rows = [...decks.values()]
+            // searchDecks (WHERE present) vs. listDecks (no WHERE at all).
+            // boundArgs for search = [titlePattern, contentPattern] * N terms,
+            // then a trailing LIMIT — each pair shares one '%term%' pattern
+            // (store.ts binds the identical pattern to both sides of each
+            // term's OR), so only the even-indexed half needs reading.
+            if (sql.includes('WHERE')) {
+              const limit = boundArgs[boundArgs.length - 1]
+              const patterns = boundArgs.slice(0, -1)
+              const needles = []
+              for (let i = 0; i < patterns.length; i += 2) needles.push(patterns[i].slice(1, -1))
+              rows = rows.filter((d) => {
+                const title = (d.title || '').toLowerCase()
+                const text = d.search_text || ''
+                return needles.every((n) => title.includes(n) || text.includes(n))
+              })
+              rows = rows.sort((a, b) => (b.pinned - a.pinned) || (b.updated_at - a.updated_at)).slice(0, limit)
+            } else {
+              rows = rows.sort((a, b) => (b.pinned - a.pinned) || (b.updated_at - a.updated_at))
+            }
+            return { results: rows, success: true }
           }
           if (sql.includes('FROM projects')) {
             const results = [...projects.values()].sort((a, b) => a.name.localeCompare(b.name))
@@ -1711,6 +1734,151 @@ await check('a compiled doc round-trips through POST /api/decks and renders in t
 })
 
 // --- logout -------------------------------------------------------------
+
+// --- search ---------------------------------------------------------------
+
+await check('GET /api/search without a session is rejected', async () => {
+  const res = await worker.fetch(new Request('https://platform.example/api/search?q=whatever'), env)
+  assert(res.status === 401, `expected 401, got ${res.status}`)
+})
+
+await check('GET /api/search without q is a 400', async () => {
+  const res = await worker.fetch(
+    new Request('https://platform.example/api/search', { headers: { cookie: ownerCookie } }),
+    env,
+  )
+  assert(res.status === 400, `expected 400, got ${res.status}`)
+})
+
+const searchDoc = (title, contentHtml) => ({
+  ...exampleDoc,
+  title,
+  slides: [{ ...exampleDoc.slides[0], elements: [{ ...exampleDoc.slides[0].elements[0], html: contentHtml }] }],
+})
+
+let searchDeckAlphaId, searchDeckBetaId, searchDeckGammaId
+await check('POST /api/decks seeds three searchable decks (title vs. content matches)', async () => {
+  const create = async (doc) => {
+    const res = await worker.fetch(
+      new Request('https://platform.example/api/decks', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie: ownerCookie },
+        body: JSON.stringify({ doc }),
+      }),
+      env,
+    )
+    return (await readBody(res)).data.id
+  }
+  searchDeckAlphaId = await create(searchDoc('Alpha Quarterly Review', 'revenue growth strategy'))
+  searchDeckBetaId = await create(searchDoc('Beta Notes', 'alpha testing feedback'))
+  searchDeckGammaId = await create(searchDoc('Gamma', 'totally unrelated filler'))
+  assert(searchDeckAlphaId && searchDeckBetaId && searchDeckGammaId, 'all three decks should have been created')
+})
+
+await check('GET /api/search matches a term against EITHER title or content', async () => {
+  const res = await worker.fetch(
+    new Request('https://platform.example/api/search?q=alpha', { headers: { cookie: ownerCookie } }),
+    env,
+  )
+  const { data, text } = await readBody(res)
+  assert(res.status === 200, `expected 200, got ${res.status}: ${text}`)
+  const ids = data.decks.map((d) => d.id)
+  assert(ids.includes(searchDeckAlphaId), 'title match ("Alpha...") should be included')
+  assert(ids.includes(searchDeckBetaId), 'content match ("alpha testing...") should be included')
+  assert(!ids.includes(searchDeckGammaId), 'a deck matching neither title nor content should be excluded')
+})
+
+await check('GET /api/search with multiple space-separated terms ANDs them, each independently against title-or-content', async () => {
+  const res = await worker.fetch(
+    new Request('https://platform.example/api/search?q=' + encodeURIComponent('alpha revenue'), {
+      headers: { cookie: ownerCookie },
+    }),
+    env,
+  )
+  const { data } = await readBody(res)
+  const ids = data.decks.map((d) => d.id)
+  assert(ids.includes(searchDeckAlphaId), '"alpha" (title) AND "revenue" (content) should both be satisfied by the Alpha deck')
+  assert(
+    !ids.includes(searchDeckBetaId),
+    'the Beta deck has "alpha" in its content but no "revenue" anywhere, so it should NOT match the two-term AND query',
+  )
+})
+
+await check('GET /api/search returns an empty list for a query matching nothing', async () => {
+  const res = await worker.fetch(
+    new Request('https://platform.example/api/search?q=zzzznomatchzzzz', { headers: { cookie: ownerCookie } }),
+    env,
+  )
+  const { data } = await readBody(res)
+  assert(Array.isArray(data.decks) && data.decks.length === 0, 'expected zero results')
+})
+
+await check('GET /api/search finds content in an html-kind deck (tag-stripped)', async () => {
+  const html = '<!doctype html><html><head><title>Html Search Deck</title></head><body><h1>uniquehtmlkeyword lives here</h1></body></html>'
+  const createRes = await worker.fetch(
+    new Request('https://platform.example/api/decks', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: ownerCookie },
+      body: JSON.stringify({ html }),
+    }),
+    env,
+  )
+  const htmlDeckId = (await readBody(createRes)).data.id
+
+  const res = await worker.fetch(
+    new Request('https://platform.example/api/search?q=uniquehtmlkeyword', { headers: { cookie: ownerCookie } }),
+    env,
+  )
+  const { data } = await readBody(res)
+  assert(data.decks.some((d) => d.id === htmlDeckId), 'expected the html deck to be found by its stripped-tag body content')
+})
+
+await check('PATCH /api/decks/:id (content replace) re-derives search_text — old content stops matching, new content starts', async () => {
+  const patchRes = await worker.fetch(
+    new Request(`https://platform.example/api/decks/${searchDeckGammaId}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', cookie: ownerCookie },
+      body: JSON.stringify({ doc: searchDoc('Gamma', 'freshly replaced wording') }),
+    }),
+    env,
+  )
+  assert(patchRes.status === 200, `expected 200, got ${patchRes.status}`)
+
+  const oldRes = await worker.fetch(
+    new Request('https://platform.example/api/search?q=unrelated', { headers: { cookie: ownerCookie } }),
+    env,
+  )
+  const { data: oldData } = await readBody(oldRes)
+  assert(!oldData.decks.some((d) => d.id === searchDeckGammaId), 'the OLD content keyword should no longer match after replace')
+
+  const newRes = await worker.fetch(
+    new Request('https://platform.example/api/search?q=' + encodeURIComponent('freshly replaced'), {
+      headers: { cookie: ownerCookie },
+    }),
+    env,
+  )
+  const { data: newData } = await readBody(newRes)
+  assert(newData.decks.some((d) => d.id === searchDeckGammaId), 'the NEW content should match after replace')
+})
+
+await check('GET /api/search caps results at 10', async () => {
+  for (let i = 0; i < 11; i++) {
+    await worker.fetch(
+      new Request('https://platform.example/api/decks', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie: ownerCookie },
+        body: JSON.stringify({ doc: searchDoc('Capacity test deck ' + i, 'capacitytestcontent') }),
+      }),
+      env,
+    )
+  }
+  const res = await worker.fetch(
+    new Request('https://platform.example/api/search?q=capacitytestcontent', { headers: { cookie: ownerCookie } }),
+    env,
+  )
+  const { data } = await readBody(res)
+  assert(data.decks.length === 10, `expected exactly 10 results, got ${data.decks.length}`)
+})
 
 await check('POST /api/logout ends the session, further owner requests are rejected', async () => {
   const logoutRes = await worker.fetch(
