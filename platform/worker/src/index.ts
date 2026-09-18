@@ -11,6 +11,7 @@
 //   GET  /                     compile+create wizard + deck history sidebar (demo.ts) — OWNER ONLY
 //   POST /api/compile           outline JSON -> compiled bento/slides doc JSON (no storage) — OWNER ONLY
 //   GET  /api/decks             list decks, most-recently-touched first (sidebar data) — OWNER ONLY
+//   GET  /api/search?q=         title/content search, space-separated terms AND'd — OWNER ONLY
 //   POST /api/decks             create a deck: { doc } or { html } -> { id } — OWNER ONLY
 //   GET  /api/decks/:id         fetch a deck's content — OWNER ONLY
 //   PATCH /api/decks/:id        replace a deck's stored content — { doc } for 'bento',
@@ -109,6 +110,7 @@ import {
   putAsset,
   getAsset,
   listDecks,
+  searchDecks,
   createProject,
   listProjects,
   getProject,
@@ -298,21 +300,36 @@ function isDeckAccess(v: unknown): v is DeckAccess {
   return typeof v === 'string' && (DECK_ACCESS_LEVELS as readonly string[]).includes(v)
 }
 
+function deckMetaToJson(d: DeckMeta) {
+  return {
+    id: d.id,
+    title: d.title,
+    createdAt: d.created_at,
+    updatedAt: d.updated_at,
+    access: d.access,
+    kind: d.kind,
+    pinned: !!d.pinned,
+    projectId: d.project_id,
+    hasPassword: !!d.share_password_hash,
+  }
+}
+
 async function handleListDecks(env: Env): Promise<Response> {
   const decks = await listDecks(env)
-  return json({
-    decks: decks.map((d) => ({
-      id: d.id,
-      title: d.title,
-      createdAt: d.created_at,
-      updatedAt: d.updated_at,
-      access: d.access,
-      kind: d.kind,
-      pinned: !!d.pinned,
-      projectId: d.project_id,
-      hasPassword: !!d.share_password_hash,
-    })),
-  })
+  return json({ decks: decks.map(deckMetaToJson) })
+}
+
+/** The sidebar's search box. `q` is required and non-blank — an empty/
+ *  missing query is a 400, not "return everything" (the client only ever
+ *  calls this with real input; a blank call would be a bug worth
+ *  surfacing, not silently returning the whole deck list). Same JSON
+ *  shape as GET /api/decks so the dropdown can reuse one renderer. */
+async function handleSearchDecks(req: Request, env: Env): Promise<Response> {
+  const url = new URL(req.url)
+  const q = url.searchParams.get('q') ?? ''
+  if (!q.trim()) return json({ error: 'q is required' }, { status: 400 })
+  const decks = await searchDecks(env, q)
+  return json({ decks: decks.map(deckMetaToJson) })
 }
 
 async function handleCreate(req: Request, env: Env): Promise<Response> {
@@ -758,6 +775,12 @@ export default {
         const denied = await requireOwnerApi(req, env)
         if (denied) return denied
         return await handleCompile(req)
+      }
+
+      if (parts[0] === 'api' && parts[1] === 'search' && parts.length === 2 && req.method === 'GET') {
+        const denied = await requireOwnerApi(req, env)
+        if (denied) return denied
+        return await handleSearchDecks(req, env)
       }
 
       if (parts[0] === 'api' && parts[1] === 'decks') {

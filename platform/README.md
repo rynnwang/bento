@@ -196,6 +196,34 @@ saved locally. Full reasoning: `docs/DECISIONS.md`.
   the real `<a target="_blank">` still work exactly as before. The
   preview's own "Open in new tab ↗" link is the explicit escape hatch for
   when the panel isn't enough (e.g. presenting).
+- **Search** (`migrations/0009_search_text.sql`'s `decks.search_text`,
+  `GET /api/search?q=`, `searchText.ts`) — a search box now owns the row
+  that used to be the preview panel's bare title bar (that bar, and the
+  wizard, both moved DOWN one row to make room — see `.main-topbar`).
+  Space-separated terms are AND'd, each term independently matched
+  against a deck's TITLE OR its precomputed content ("a b" finds a deck
+  where "a" and "b" each appear somewhere, in either column, not
+  necessarily the same one). Content isn't searched live against R2 on
+  every keystroke — `search_text` is a lowercase, tag-stripped text blob
+  computed once at write time (create/replace) and stored in D1 right
+  next to the metadata it's queried with, one `LIKE` scan away (this
+  project's declared scale doesn't need FTS5). A `'bento'` deck is walked
+  GENERICALLY — a blocklist of known structural/style JSON keys (`id`,
+  `x`, `fill`, `fontSize`, …), not an allowlist of content keys — so new
+  element types stay indexed without a matching edit to `searchText.ts`;
+  an `'html'` deck just gets its tags stripped. Renaming a deck does NOT
+  recompute `search_text` (title lives in its own column, matched
+  separately) — only a content change does (`replaceDeckDoc`/
+  `replaceHtmlDeck`). Typing debounces 200ms, results cap at 10, and each
+  result is a plain `<a target="_blank">` — arrow keys move the
+  highlight, Enter opens the highlighted (or first) result, Escape or an
+  outside click closes the dropdown. Owner-only, same as everything else
+  here — a deck's title/content is exactly what `access:'private'` exists
+  to hide, so this could never be a public endpoint. **Known gap**:
+  existing decks default to `search_text: ''` (empty) — there's no bulk
+  backfill migration, since populating it means reading each deck's bytes
+  back out of R2, which a SQL migration file can't do; they become
+  content-searchable the next time they're saved.
 
 ## Directory layout
 
@@ -218,6 +246,7 @@ platform/
       pageStyles.ts           — shared CSS (demo.ts + the auth/share pages)
       favicon.ts              — the platform's own site icon, served from GET /favicon.png
                                  (repo-root logo.png, embedded as base64 at build time)
+      searchText.ts            — plain-text extraction for the search box (decks.search_text)
       ids.ts                — random ids/tokens, sha256
       demo.ts               — prompt→paste→create wizard + deck history sidebar, served at `/` (owner-only)
       env.ts                — Env (binding) interface
@@ -234,6 +263,7 @@ platform/
       0006_pinned.sql         — decks.pinned (sidebar pin, see "Sidebar: pinning, resizing, and a real preview panel")
       0007_projects.sql       — projects table + decks.project_id (sidebar folders, same section)
       0008_share_password.sql — decks.share_password_* (see "Share passwords" section)
+      0009_search_text.sql    — decks.search_text (see "Search" section)
     wrangler.toml          — entry point + binding POINTERS for Workers Builds (see below)
     ci-build.mjs           — Workers Builds' "Build command": produces generated/shell.ts
     build.mjs              — esbuild bundle → dist/worker.js, used by test:router (below), not by deploy
@@ -388,7 +418,7 @@ with your own**, not fill in blanks.
   **Console** tab and run each file in `platform/worker/migrations/` **in
   numeric order** — `0001_init.sql`, `0002_auth.sql`, `0003_editable.sql`,
   `0004_access.sql`, `0005_kind.sql`, `0006_pinned.sql`, `0007_projects.sql`,
-  `0008_share_password.sql`. That's the whole migration step — no CLI, no separate
+  `0008_share_password.sql`, `0009_search_text.sql`. That's the whole migration step — no CLI, no separate
   tool. (If you already ran `0001` from an earlier version of this project
   under its old name, `schema.sql` — same file, just moved and renumbered —
   you only need to run whichever numbered files come after the one you last
@@ -539,6 +569,7 @@ problem for whenever that app exists, not solved here.
 | `/api/logout` | POST | none | ends the current session |
 | `/api/compile` | POST | owner session | `{outline}` → `{doc}`. Pure — nothing is stored |
 | `/api/decks` | GET | owner session | `{decks: [{id, title, createdAt, updatedAt, access, kind, pinned, projectId, hasPassword}]}`, pinned first then most-recently-touched — the sidebar's data source. `hasPassword` is a plain boolean; the hash/salt are never sent to any client, owner included |
+| `/api/search` | GET | owner session | `?q=` (required, space-separated terms AND'd) → same shape as `GET /api/decks`, capped at 10, matching pinned-then-recency order. 400 if `q` is missing/blank. Matches title OR the precomputed `search_text` per term — see the "Search" section |
 | `/api/decks` | POST | owner session | `{doc, access?}` (a `'bento'` deck) or `{html, access?}` (an `'html'` deck) → `{id, url}`. `access` is one of `'private'\|'view'\|'edit'`; defaults to `'edit'` for `doc`, coerced to `'view'` if `'edit'` for `html` (meaningless for that kind, not rejected) |
 | `/api/decks/:id` | GET | owner session | `{kind:'bento', doc}` or `{kind:'html', html}` |
 | `/api/decks/:id` | PATCH | owner session | `{doc}` replaces a `'bento'` deck's stored doc; `{html}` re-uploads an `'html'` deck's stored bytes wholesale, re-deriving the title from the new file's `<title>`. Sending the wrong shape for the deck's kind is a 400, not a silent no-op |

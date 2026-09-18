@@ -119,6 +119,15 @@ Current feature set, all owner-only except where noted:
   is `target="_blank"` and the main area used to never show anything but
   the create wizard as a result; a modified click (Ctrl/Cmd/Shift/Alt) is
   deliberately left alone so native new-tab/window gestures still work.
+  Both the preview's own title bar and the create wizard now sit BELOW a
+  persistent `.main-topbar` (search box + Log out, see the Search bullet
+  below) rather than at the very top of the main area — `.main-content`
+  became a fixed-height flex column (`height:100vh; overflow:hidden`) with
+  the topbar as its first, non-scrolling row and whichever of
+  `#previewPanel`/`#wizardWrap` is showing filling the rest
+  (`flex:1; min-height:0; overflow-y:auto` on `#wizardWrap`, since
+  `.wrap`'s own page-level scroll no longer applies once the outer column
+  clips overflow).
   **Projects** (`migrations/0007_projects.sql` — a `projects` table +
   `decks.project_id`, no access level/kind/content of its own, purely a
   sidebar grouping) render as collapsible folders between Pinned and
@@ -144,6 +153,24 @@ Current feature set, all owner-only except where noted:
   the others further down the page — see this file's hard-won lessons
   above on `min-width:auto`/`overflow-y` sizing traps for why this needed
   the explicit `min-height:0` rather than just `flex:1`.
+- **Search** (`migrations/0009_search_text.sql`'s `decks.search_text`,
+  `GET /api/search?q=`, `searchText.ts`) — lives in the `.main-topbar` row
+  (see above), replacing the space the preview panel's bare title bar
+  used to occupy alone. Space-separated terms AND — each term matched
+  independently against title OR the precomputed `search_text`, so "a b"
+  can satisfy "a" from the title and "b" from the content. `search_text`
+  is computed once at write time (create/`replaceDeckDoc`/
+  `replaceHtmlDeck`), never at query time — a plain `LIKE` scan against a
+  precomputed column, not FTS5 (not needed at this project's scale) and
+  not a live R2 refetch per keystroke (far too slow for a type-ahead
+  dropdown). `searchText.ts` walks a `'bento'` doc GENERICALLY — a
+  BLOCKLIST of structural/style JSON keys, not an allowlist of content
+  keys — so it keeps indexing new element types without a matching edit;
+  an `'html'` deck just gets tag-stripped. Renaming does NOT touch
+  `search_text` (title is its own column, matched separately) — only a
+  content change does. 200ms debounce, 10-result cap, arrow-key
+  highlight, Enter opens the highlighted result, each result a plain
+  `<a target="_blank">`. Owner-only, like every other route here.
 - **Content patterns** (`demo.ts`'s `PATTERNS`) — Step 1's prompt is one of
   four genre-specific briefs (General/Business review/Pitch deck/Tutorial),
   each with its own guidance paragraph and loadable example; every pattern

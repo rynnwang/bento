@@ -508,25 +508,60 @@ ${PAGE_STYLES}
   .pw-modal input[type=password]:focus { outline: none; border-color: var(--accent); }
   .pw-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
   .pw-modal-actions .pw-remove { margin-right: auto; }
-  .sidebar-footer { border-top: 1px solid var(--border); margin-top: 6px; padding-top: 6px; }
+  /* Log out used to sit in its own footer row at the bottom of the
+     sidebar — moved to the main-topbar's right edge (see below) so that
+     row's height goes back to the deck list instead. */
   .logout-link {
-    display: block; width: 100%; text-align: left; font-size: 12.5px; color: var(--text-dim);
-    background: none; border: none; cursor: pointer; padding: 4px 8px;
+    flex: 0 0 auto; font-size: 12.5px; color: var(--text-dim);
+    background: none; border: none; cursor: pointer; padding: 6px 10px; border-radius: 6px;
   }
-  .logout-link:hover { color: var(--text); }
-  .main-content { flex: 1; min-width: 0; }
+  .logout-link:hover { color: var(--text); background: rgba(28,43,61,0.07); }
+  /* main-content is now a fixed-height column (topbar, then whichever of
+     preview-panel/#wizardWrap is showing) instead of letting the page
+     itself scroll — the topbar needs to stay pinned while EITHER of
+     those scrolls independently beneath it. */
+  .main-content { flex: 1; min-width: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
   .menu-toggle { display: none; }
   .sidebar-backdrop { display: none; }
+
+  /* main-topbar: the search box (title+content, see searchInput's JS) and
+     Log out, replacing the old bare preview-header row at the very top of
+     the main area — freed that whole row for search instead of only
+     showing a deck's title once one happened to be open. */
+  .main-topbar {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 12px; padding: 10px 20px;
+    border-bottom: 1px solid var(--border); background: var(--bg);
+  }
+  .search-wrap { position: relative; flex: 1; min-width: 0; max-width: 560px; }
+  .search-input {
+    display: block; width: 100%; box-sizing: border-box; background: var(--bg-elev); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; font-size: 13px;
+  }
+  .search-input:focus { outline: none; border-color: var(--accent); }
+  .search-results {
+    position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 55;
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 10px 30px rgba(28,43,61,0.16); max-height: 360px; overflow-y: auto; padding: 6px;
+  }
+  .search-result-item {
+    display: flex; align-items: baseline; gap: 8px; padding: 7px 8px; border-radius: 6px;
+    text-decoration: none; color: var(--text); font-size: 13px;
+  }
+  .search-result-item:hover, .search-result-item.active { background: rgba(28,43,61,0.07); }
+  .search-result-title { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .search-result-time { flex: 0 0 auto; color: var(--text-dim); font-size: 11px; }
+  .search-empty { padding: 10px 8px; color: var(--text-dim); font-size: 12.5px; }
 
   /* main-area deck preview — a plain click on a sidebar deck link shows it
      HERE instead of only ever opening a new tab, so the main panel isn't
      stuck showing the create wizard forever once you have any decks.
      Ctrl/Cmd/Shift/middle-click still bypass this and open a real new tab
      (native browser behavior, never intercepted — see the click handler). */
-  .preview-panel { display: flex; flex-direction: column; height: 100vh; }
+  .preview-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   .preview-panel[hidden] { display: none; } /* [class] and [hidden] tie on specificity — author CSS beats the
-    UA default either way, so without this the hidden panel still laid out at height:100vh, empty, above the
+    UA default either way, so without this the hidden panel still laid out full-height, empty, above the
     wizard — the "large blank area" this fixes */
+  #wizardWrap { flex: 1; min-height: 0; overflow-y: auto; }
   .preview-header {
     display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--border);
     flex: 0 0 auto;
@@ -559,6 +594,8 @@ ${PAGE_STYLES}
     }
     /* the overlay drawer's width is fixed by its own CSS, not user-resizable */
     .sidebar-resize-handle { display: none; }
+    .main-topbar { padding: 8px 14px; gap: 8px; }
+    .logout-link { padding: 6px 8px; }
   }
 </style>
 </head>
@@ -573,12 +610,16 @@ ${PAGE_STYLES}
     <div class="deck-list" id="deckList">
       <div class="deck-list-loading">Loading…</div>
     </div>
-    <div class="sidebar-footer">
-      <button id="logout" class="logout-link" type="button">Log out</button>
-    </div>
     <div class="sidebar-resize-handle" id="sidebarResizeHandle"></div>
   </aside>
   <main class="main-content">
+    <div class="main-topbar">
+      <div class="search-wrap">
+        <input type="text" id="searchInput" class="search-input" placeholder="Search decks by title or content…" autocomplete="off" spellcheck="false">
+        <div class="search-results" id="searchResults" hidden></div>
+      </div>
+      <button id="logout" class="logout-link" type="button">Log out</button>
+    </div>
     <div class="preview-panel" id="previewPanel" hidden>
       <div class="preview-header">
         <span class="preview-title" id="previewTitle"></span>
@@ -1353,6 +1394,92 @@ document.getElementById('deckList').addEventListener('click', (e) => {
   const item = link.closest('.deck-item')
   const info = deckIndex[item.dataset.id] || {}
   showPreview(item.dataset.id, info.title, link.href)
+})
+
+// --- search box (main-topbar) -------------------------------------------
+// Title/content search, space-separated terms AND'd server-side
+// (store.ts's searchDecks) — this box only debounces the request and
+// renders up to 10 results; it does no filtering of its own. A result is
+// a plain <a target="_blank">, same as every other deck link in this
+// page, so a plain click opens a new tab and a modified click still gets
+// the browser's native handling.
+
+const searchInput = document.getElementById('searchInput')
+const searchResults = document.getElementById('searchResults')
+let searchDebounce = null
+let searchActiveIndex = -1
+let searchItems = []
+
+function closeSearchResults() {
+  searchResults.hidden = true
+  searchResults.innerHTML = ''
+  searchActiveIndex = -1
+  searchItems = []
+}
+
+function renderSearchResults(decks) {
+  searchActiveIndex = -1
+  if (!decks.length) {
+    searchResults.innerHTML = '<div class="search-empty">No matches.</div>'
+    searchItems = []
+  } else {
+    searchResults.innerHTML = decks.map((d) =>
+      '<a class="search-result-item" href="/d/' + d.id + '" target="_blank" rel="noopener" data-id="' + d.id + '">' +
+      '<span class="search-result-title">' + esc(d.title || 'Untitled deck') + '</span>' +
+      '<span class="search-result-time">' + relativeTime(d.updatedAt) + '</span>' +
+      '</a>',
+    ).join('')
+    searchItems = [...searchResults.querySelectorAll('.search-result-item')]
+    searchItems.forEach((el) => {
+      el.addEventListener('click', () => {
+        searchInput.value = ''
+        closeSearchResults()
+      })
+    })
+  }
+  searchResults.hidden = false
+}
+
+function setSearchActive(index) {
+  if (!searchItems.length) return
+  searchActiveIndex = (index + searchItems.length) % searchItems.length
+  searchItems.forEach((el, i) => el.classList.toggle('active', i === searchActiveIndex))
+  searchItems[searchActiveIndex].scrollIntoView({ block: 'nearest' })
+}
+
+async function runSearch(q) {
+  try {
+    const res = await fetch('/api/search?q=' + encodeURIComponent(q))
+    if (!res.ok) { closeSearchResults(); return }
+    const body = await res.json()
+    // The input can race ahead of a slow response — only render if this
+    // is still what's actually typed.
+    if (searchInput.value.trim() === q) renderSearchResults(body.decks || [])
+  } catch (e) {
+    closeSearchResults()
+  }
+}
+
+searchInput.addEventListener('input', () => {
+  const q = searchInput.value.trim()
+  if (searchDebounce) clearTimeout(searchDebounce)
+  if (!q) { closeSearchResults(); return }
+  searchDebounce = setTimeout(() => runSearch(q), 200)
+})
+searchInput.addEventListener('keydown', (e) => {
+  if (searchResults.hidden) return
+  if (e.key === 'ArrowDown') { e.preventDefault(); setSearchActive(searchActiveIndex + 1) }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); setSearchActive(searchActiveIndex - 1) }
+  else if (e.key === 'Enter') {
+    e.preventDefault()
+    const target = searchItems[searchActiveIndex >= 0 ? searchActiveIndex : 0]
+    if (target) target.click()
+  } else if (e.key === 'Escape') {
+    closeSearchResults()
+  }
+})
+document.addEventListener('click', (e) => {
+  if (!searchResults.hidden && !e.target.closest('.search-wrap')) closeSearchResults()
 })
 
 document.getElementById('logout').onclick = async () => {

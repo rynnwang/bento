@@ -26,6 +26,7 @@ import type { Env } from './env.ts'
 import { randomId, sha256Hex } from './ids.ts'
 import { SHELL_VERSION } from './splice.ts'
 import { hashSharePassword, type SharePasswordRecord } from './auth.ts'
+import { extractBentoSearchText, extractHtmlSearchText } from './searchText.ts'
 
 /** Who can reach a deck without the owner's own session.
  *  - 'private' — nobody; handleView/handleAsset 404 exactly like an unknown
@@ -125,10 +126,10 @@ export async function createDeck(
 
   await env.DOCS.put(deckDocKey(id), json, { httpMetadata: { contentType: 'application/json' } })
   await env.DB.prepare(
-    `INSERT INTO decks (id, title, created_at, updated_at, edit_token_hash, shell_version, doc_bytes, access, kind)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'bento')`,
+    `INSERT INTO decks (id, title, created_at, updated_at, edit_token_hash, shell_version, doc_bytes, access, kind, search_text)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'bento', ?)`,
   )
-    .bind(id, titleOf(stored), now, now, '', SHELL_VERSION, json.length, access)
+    .bind(id, titleOf(stored), now, now, '', SHELL_VERSION, json.length, access, extractBentoSearchText(stored))
     .run()
 
   return { id }
@@ -150,10 +151,10 @@ export async function createHtmlDeck(
 
   await env.DOCS.put(deckHtmlKey(id), html, { httpMetadata: { contentType: 'text/html; charset=utf-8' } })
   await env.DB.prepare(
-    `INSERT INTO decks (id, title, created_at, updated_at, edit_token_hash, shell_version, doc_bytes, access, kind)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'html')`,
+    `INSERT INTO decks (id, title, created_at, updated_at, edit_token_hash, shell_version, doc_bytes, access, kind, search_text)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'html', ?)`,
   )
-    .bind(id, clampTitle(title), now, now, '', SHELL_VERSION, html.length, access)
+    .bind(id, clampTitle(title), now, now, '', SHELL_VERSION, html.length, access, extractHtmlSearchText(html))
     .run()
 
   return { id }
@@ -192,6 +193,43 @@ export async function listDecks(env: Env): Promise<DeckMeta[]> {
     `SELECT ${DECK_META_COLUMNS} FROM decks ORDER BY pinned DESC, updated_at DESC LIMIT ?`,
   )
     .bind(LIST_LIMIT)
+    .all<DeckMeta>()
+  return result.results
+}
+
+const SEARCH_RESULT_LIMIT = 10
+const SEARCH_MAX_TERMS = 8 // more than this is already a very specific query; extra terms just bloat the SQL for no real gain
+
+/** Escapes LIKE metacharacters (%, _, and the escape char itself) so a
+ *  literal search term can't accidentally act as a wildcard — searching
+ *  "50%" should match the literal text "50%", not "50" followed by
+ *  anything. */
+function escapeLike(term: string): string {
+  return term.replace(/[\\%_]/g, (c) => '\\' + c)
+}
+
+/** Title-OR-content search, AND-ing space-separated terms: "a b" matches
+ *  only a deck where BOTH "a" and "b" independently appear somewhere in
+ *  the title or the precomputed search_text (searchText.ts) — each term
+ *  may come from either column, they don't have to both match the same
+ *  one. Powers the sidebar's search box; owner-only (index.ts gates the
+ *  route) — a deck's title/content is exactly what access:'private'
+ *  exists to hide, so this can never be a public endpoint. Bounded at
+ *  SEARCH_RESULT_LIMIT, same pinned-then-recency ordering as listDecks. */
+export async function searchDecks(env: Env, query: string): Promise<DeckMeta[]> {
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean).slice(0, SEARCH_MAX_TERMS)
+  if (!terms.length) return []
+  const clauses: string[] = []
+  const binds: string[] = []
+  for (const term of terms) {
+    const pattern = `%${escapeLike(term)}%`
+    clauses.push(`(LOWER(title) LIKE ? ESCAPE '\\' OR search_text LIKE ? ESCAPE '\\')`)
+    binds.push(pattern, pattern)
+  }
+  const result = await env.DB.prepare(
+    `SELECT ${DECK_META_COLUMNS} FROM decks WHERE ${clauses.join(' AND ')} ORDER BY pinned DESC, updated_at DESC LIMIT ?`,
+  )
+    .bind(...binds, SEARCH_RESULT_LIMIT)
     .all<DeckMeta>()
   return result.results
 }
@@ -294,8 +332,8 @@ export async function replaceDeckDoc(env: Env, id: string, doc: Record<string, u
   const stored = { ...doc, docId: id }
   const json = JSON.stringify(stored)
   await env.DOCS.put(deckDocKey(id), json, { httpMetadata: { contentType: 'application/json' } })
-  await env.DB.prepare(`UPDATE decks SET title = ?, updated_at = ?, doc_bytes = ? WHERE id = ?`)
-    .bind(titleOf(stored), Date.now(), json.length, id)
+  await env.DB.prepare(`UPDATE decks SET title = ?, updated_at = ?, doc_bytes = ?, search_text = ? WHERE id = ?`)
+    .bind(titleOf(stored), Date.now(), json.length, extractBentoSearchText(stored), id)
     .run()
 }
 
@@ -317,8 +355,8 @@ export async function renameHtmlDeck(env: Env, id: string, title: string): Promi
  *  custom title back can rename again afterward, same as after any create. */
 export async function replaceHtmlDeck(env: Env, id: string, html: string, title: string): Promise<void> {
   await env.DOCS.put(deckHtmlKey(id), html, { httpMetadata: { contentType: 'text/html; charset=utf-8' } })
-  await env.DB.prepare(`UPDATE decks SET title = ?, updated_at = ?, doc_bytes = ? WHERE id = ?`)
-    .bind(clampTitle(title), Date.now(), html.length, id)
+  await env.DB.prepare(`UPDATE decks SET title = ?, updated_at = ?, doc_bytes = ?, search_text = ? WHERE id = ?`)
+    .bind(clampTitle(title), Date.now(), html.length, extractHtmlSearchText(html), id)
     .run()
 }
 
