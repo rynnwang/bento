@@ -178,11 +178,23 @@ Current feature set, all owner-only except where noted:
   under the search bar, which read as a layout mistake, not a design;
   `showPreview()`/`closePreview()` now toggle `.topbar-preview.hidden`
   exactly like they already toggled `#previewPanel`). `.search-wrap` is
-  `flex: 0 1 320px` — capped, but allowed to shrink — so a long deck title
+  `flex: 0 1 420px` — capped, but allowed to shrink — so a long deck title
   reliably wins the row's remaining space over the search box stretching
   further; below 860px it hides itself entirely while previewing (a
   `:has()` selector; no-support just leaves it visible and a bit cramped).
-  Space-separated terms AND — each term matched
+  **The `#searchInput` element itself must be `input.search-input`, not
+  bare `.search-input`** — pageStyles.ts's shared `input[type=text]` rule
+  (styling the wizard's JSON-paste textarea, monospace font included) is a
+  TAG-qualified attribute selector, (0,1,1), which beats a bare class,
+  (0,1,0), regardless of source order; a bare `.search-input` silently lost
+  EVERY property (padding, font, line-height) to that shared rule the
+  whole time, rendering the search box in the textarea's monospace font at
+  the wrong height (feedback: doesn't align with "+ New deck" beside it).
+  Requalifying with the `input` tag matches that same (0,1,1) and THEN
+  source order (this file's CSS is appended after pageStyles.ts's) lets it
+  win; an explicit `height: 38px` (rather than tuning padding/line-height
+  to land on a number) is what actually guarantees pixel parity with the
+  button. Space-separated terms AND — each term matched
   independently against title OR the precomputed `search_text`, so "a b"
   can satisfy "a" from the title and "b" from the content. `search_text`
   is computed once at write time (create/`replaceDeckDoc`/

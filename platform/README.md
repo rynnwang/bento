@@ -206,13 +206,21 @@ saved locally. Full reasoning: `docs/DECISIONS.md`.
   title/Download/Open-tab/Close controls) now shares the search row
   instead — `showPreview()`/`closePreview()` toggle it exactly like they
   already toggled `#previewPanel`. `.search-wrap` keeps a comfortable,
-  capped width (`flex: 0 1 320px`) so a long deck title reliably gets
+  capped width (`flex: 0 1 420px`) so a long deck title reliably gets
   priority for the row's remaining space over the search box stretching
   further; below 860px width, the search box hides itself entirely
   whenever a deck is open (a `:has()` selector — degrades to "visible but
   a bit cramped" on a browser without support, not a break), since a
   phone-width row can't hold both comfortably and the deck's own controls
-  win that tradeoff. `#wizardWrap`'s own max-width was widened 880px→1040px
+  win that tradeoff. The search `<input>` itself has to be selected as
+  `input.search-input`, not bare `.search-input` — a bare class TIES in
+  specificity with pageStyles.ts's shared `input[type=text]` rule (styled
+  for the wizard's monospace JSON-paste textarea) and LOSES, because that
+  rule is tag-qualified: (0,1,1) beats a bare class's (0,1,0) regardless
+  of source order. The bug this produced was invisible on inspection of
+  the numbers alone — padding "8px 12px" was declared correctly, it just
+  never actually applied — and only showed up as the search box rendering
+  in the wrong (monospace) font at the wrong height. `#wizardWrap`'s own max-width was widened 880px→1040px
   in the same pass — the shared `.wrap` class's original 880px cap (still
   used as-is by every other page) read as a narrow column with a big dead
   gutter on both sides once a full-bleed topbar sat directly above it for
