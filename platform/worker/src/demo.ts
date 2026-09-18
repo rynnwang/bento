@@ -557,10 +557,25 @@ ${PAGE_STYLES}
     flex: 0 0 auto; display: flex; align-items: center; gap: 14px; padding: 10px 20px;
     border-bottom: 1px solid var(--border); background: var(--bg);
   }
-  .search-wrap { position: relative; flex: 0 1 320px; min-width: 120px; }
-  .search-input {
-    display: block; width: 100%; box-sizing: border-box; background: var(--bg-elev); color: var(--text);
-    border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; font-size: 13px;
+  .search-wrap { position: relative; flex: 0 1 420px; min-width: 120px; }
+  /* input.search-input, not just .search-input: pageStyles.ts's shared
+     input[type=text] rule (styling the wizard's JSON-paste textarea,
+     monospace font included) is a TAG-qualified attribute selector —
+     (0,1,1) — which beats a bare class — (0,1,0) — regardless of source
+     order. That's not a tie this file's usual "later rule wins" instinct
+     resolves: the shared rule silently won every property (padding,
+     font, line-height) the whole time, which is why this never actually
+     matched the "+ New deck" button's height despite matching padding
+     numbers on paper, and rendered in the textarea's monospace font.
+     Requalifying with the input tag matches that same (0,1,1), and
+     THEN source order (this file's CSS is appended after pageStyles.ts's)
+     lets it win. An explicit height (rather than tuning padding/line-
+     height to land on the right number) is what actually guarantees
+     pixel parity with the button beside it in the sidebar. */
+  input.search-input {
+    display: block; width: 100%; height: 38px; box-sizing: border-box; background: var(--bg-elev); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; padding: 0 12px;
+    font: 13px/1.4 -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   }
   .search-input:focus { outline: none; border-color: var(--accent); }
   .search-results {
