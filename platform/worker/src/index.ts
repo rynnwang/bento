@@ -84,7 +84,8 @@
 // only ever have 'private' or 'view' access — 'edit' means nothing when
 // there's no document to edit in place, so handleCreate coerces it to
 // 'view' rather than rejecting it. See handleView for why an 'html' deck is
-// served through a SANDBOXED IFRAME WRAPPER, not directly at this origin.
+// served through a SANDBOXED IFRAME WRAPPER (with `allow-same-origin`, as of
+// 2026-09-20 — see docs/DECISIONS.md), not directly at this origin.
 //
 // wrangler.toml (bindings, no secrets) drives the primary Workers Builds
 // deploy path; the "paste dist/worker.js into Quick Edit" fallback documented
@@ -185,18 +186,31 @@ function extractHtmlTitle(rawHtml: string): string {
  *  (text/table `html` fields) is sanitized at render time
  *  (slides/src/render.ts's sanitizeHtml); an uploaded 'html' deck is the
  *  opposite of that — arbitrary, unreviewed script the owner asked an AI to
- *  hand them and never necessarily read line-by-line. Serving it directly
- *  at ppt.rynnwang.com would let that script run with this origin's
- *  privileges: same-site cookies attach automatically to same-origin
- *  fetch(), so embedded script — even accidental, not malicious — could
- *  silently call the platform's own /api/decks/* endpoints using the
- *  OWNER's ambient session the moment they open their own deck's link
- *  while logged in elsewhere. `sandbox="allow-scripts …"` WITHOUT
- *  `allow-same-origin` gives the iframe's content a unique opaque origin —
- *  its script still runs (so the deck itself works), but it has no access
- *  to this origin's cookies, storage, or same-site fetch credentials at
- *  all, sandboxed or not. This only wraps the LIVE view; `/d/:id/download`
- *  still serves the raw bytes so the file is fully portable once saved.
+ *  hand them and never necessarily read line-by-line.
+ *
+ *  As of 2026-09-20 the sandbox includes `allow-same-origin` alongside
+ *  `allow-scripts` (see docs/DECISIONS.md, which supersedes this file's
+ *  original 2026-08-25 entry). That combination is normally treated as
+ *  "no real sandbox" — `allow-scripts` + `allow-same-origin` together let
+ *  the framed script obtain this origin's actual identity, so it CAN read/
+ *  write this origin's cookies and storage and could reach the owner's own
+ *  ambient session the moment they open a deck link while logged in
+ *  elsewhere (the exact risk the original opaque-origin design existed to
+ *  close). The reversal was forced by a concrete, verified break: some
+ *  decks embed MapLibre GL JS (WebGL2-only as of v6, no WebGL1 fallback),
+ *  and browsers refuse to create a WebGL2 context inside a sandboxed
+ *  iframe whose origin is opaque (no `allow-same-origin`) — so any deck
+ *  with a MapLibre map rendered a permanently blank gray canvas with no
+ *  visible error. `allow-same-origin` gives the iframe a real, non-opaque
+ *  origin again, which is what WebGL2 context creation requires.
+ *  This tradeoff is accepted ONLY under the current assumption that this
+ *  platform renders content the owner generates themselves (AI-produced
+ *  decks), not arbitrary third-party uploads. If that assumption ever
+ *  changes, this must NOT be the fix — see docs/DECISIONS.md for the
+ *  fallback (serving 'html' decks from a dedicated, separate hostname so
+ *  the deck's real origin is isolated from ppt.rynnwang.com regardless of
+ *  sandbox flags). This only wraps the LIVE view; `/d/:id/download` still
+ *  serves the raw bytes so the file is fully portable once saved.
  *  `srcdoc` needs the payload escaped as a double-quoted HTML attribute
  *  (not the same escaping as element content — `<`/`>` are fine here,
  *  `"` is not). */
@@ -206,7 +220,7 @@ function htmlDeckWrapper(rawHtml: string, title: string): string {
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>${titleEscaped}</title>
 <style>html,body{margin:0;height:100%;background:#0D1B2E}iframe{border:0;width:100vw;height:100vh;display:block}</style>
-</head><body><iframe sandbox="allow-scripts allow-popups allow-forms allow-modals" srcdoc="${srcdocEscaped}"></iframe></body></html>`
+</head><body><iframe sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals" srcdoc="${srcdocEscaped}"></iframe></body></html>`
 }
 
 const MAX_HTML_DECK_BYTES = 8 * 1024 * 1024 // matches the image-asset cap (MEDIA_EMBED_BUDGET convention)

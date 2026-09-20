@@ -14,6 +14,47 @@ Decision. Why. Pointers.
 
 ---
 
+## 2026-09-20 — `'html'` deck sandbox gains `allow-same-origin`, superseding the 2026-08-25 opaque-origin design
+
+**Decision.** The sandboxed iframe that serves a live `kind:'html'` deck
+(`platform/worker/src/index.ts`'s `htmlDeckWrapper`, called from
+`handleView`) now sets `sandbox="allow-scripts allow-same-origin
+allow-popups allow-forms allow-modals"` — adding `allow-same-origin` to the
+set the 2026-08-25 entry below deliberately left out. This is a single
+shared, unconditional code path: every `kind:'html'` deck's live view goes
+through this one function regardless of `access` level, project, pin, or
+whether the viewer is the owner, so the one-line change covers every deck,
+present and future, with no per-deck or per-user configuration.
+
+**Why.** A deck embedding MapLibre GL JS (v6, WebGL2-only, no WebGL1
+fallback) rendered a permanently blank gray map with no visible error.
+Verified root cause (measured, not guessed, via a minimal
+`canvas.getContext('webgl2')` repro): browsers refuse to create a WebGL2
+context inside a sandboxed iframe with an opaque (`null`) origin, which is
+exactly what `allow-scripts` without `allow-same-origin` produces. WebGL1
+is unaffected, but MapLibre v6 has no WebGL1 path to fall back to, so it
+throws `GPUInitializationError` and the canvas just stays empty.
+
+**Tradeoff accepted.** `allow-scripts` + `allow-same-origin` together are
+normally understood as removing sandbox isolation outright — the framed
+script gets this origin's real identity, so it can read/write this
+origin's cookies and storage, which is the exact ambient-session risk the
+2026-08-25 design existed to prevent (see that entry). This is accepted
+ONLY under the current, explicit assumption that this platform serves
+content the owner generates themselves (AI-produced decks), not arbitrary
+third-party uploads. **If that assumption ever changes, do not just revert
+to loosening/tightening this flag** — follow the escalation path the
+original entry already named: serve `'html'` decks from a dedicated,
+separate hostname/subdomain, so the deck gets a genuinely distinct origin
+independent of any sandbox attribute.
+
+**Pointers.** `platform/worker/src/index.ts` (`htmlDeckWrapper` and its
+doc comment), `CLAUDE.md`'s `kind:'html'` bullet, `platform/README.md`'s
+"Decks that aren't Bento at all" section, `platform/worker/test/
+router.test.mjs`.
+
+---
+
 ## 2026-08-25 — An uploaded `'html'` deck is served through a sandboxed iframe, never directly at the platform's own origin
 
 **Decision.** `platform/worker/migrations/0005_kind.sql` adds a second deck

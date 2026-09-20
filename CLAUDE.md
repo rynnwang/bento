@@ -222,14 +222,29 @@ Current feature set, all owner-only except where noted:
   0005_kind.sql`) — its one edit path is a wholesale re-upload (see "Deck
   CRUD" above). Its title defaults to its own `<title>` tag. **Served
   through a sandboxed
-  `<iframe>` (`sandbox="allow-scripts …"` WITHOUT `allow-same-origin`),
-  never directly at this origin** — arbitrary unreviewed script running
+  `<iframe>`** (`platform/worker/src/index.ts`'s `htmlDeckWrapper`, one
+  shared unconditional code path for every `kind:'html'` deck's live view),
+  never directly at this origin — arbitrary unreviewed script running
   same-origin would carry the OWNER's own ambient session cookie into any
   fetch() it made, so opening one's own deck link while logged in elsewhere
-  could silently authorize a request against `/api/decks/*`. The sandbox
-  gives the deck's script a unique opaque origin instead: it still runs, but
-  has zero access to this origin's cookies/storage. Only wraps the *live*
-  view — download still serves the exact original bytes.
+  could silently authorize a request against `/api/decks/*`. **As of
+  2026-09-20 the sandbox is `allow-scripts allow-same-origin allow-popups
+  allow-forms allow-modals`** — `allow-same-origin` was added (reversing the
+  original opaque-origin design; `docs/DECISIONS.md` 2026-09-20 supersedes
+  2026-08-25) because a deck embedding MapLibre GL JS v6 (WebGL2-only, no
+  WebGL1 fallback) rendered a permanently blank gray map: browsers refuse to
+  create a WebGL2 context inside a sandboxed iframe with an opaque origin,
+  which is exactly what the sandbox produced without `allow-same-origin`.
+  `allow-scripts` + `allow-same-origin` together are normally understood as
+  removing sandbox isolation outright — the framed script gets this
+  origin's real identity, so it CAN read/write this origin's cookies and
+  storage — and this is accepted ONLY under the assumption that this
+  platform serves content the owner generates themselves, not arbitrary
+  third-party uploads. If that assumption changes, the fix is NOT to touch
+  this flag again — serve `'html'` decks from a dedicated, separate
+  hostname/subdomain instead (true origin isolation regardless of sandbox
+  flags). Only wraps the *live* view — download still serves the exact
+  original bytes.
 
 Biggest documented gap: **live-editor edits made at `/d/:id` aren't saved
 back** — the served page is the real, full editor, but nothing currently

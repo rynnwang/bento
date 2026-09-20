@@ -960,7 +960,7 @@ await check('GET /d/:id for an html deck serves a sandboxed iframe wrapper, not 
   assert(res.status === 200, `expected 200, got ${res.status}`)
   assert(text.includes('<iframe'), 'expected an iframe wrapper')
   assert(text.includes('sandbox='), 'iframe must be sandboxed')
-  assert(!text.includes('allow-same-origin'), 'sandbox must NOT include allow-same-origin (see index.ts htmlDeckWrapper)')
+  assert(text.includes('allow-same-origin'), 'sandbox must include allow-same-origin (WebGL2/MapLibre fix — see docs/DECISIONS.md 2026-09-20 and index.ts htmlDeckWrapper)')
   assert(text.includes('srcdoc='), 'expected the deck content passed via srcdoc')
   // The raw <script>alert(1)</script> must be present only INSIDE the escaped
   // srcdoc attribute, never as live markup outside the iframe (which would
