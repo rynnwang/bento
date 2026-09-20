@@ -118,14 +118,24 @@ origin's privileges: same-site cookies attach automatically to same-origin
 silently call the platform's own `/api/decks/*` endpoints using the
 **owner's own ambient session** the moment they open their own deck's link
 while logged in elsewhere. `index.ts`'s `htmlDeckWrapper` sets
-`sandbox="allow-scripts allow-popups allow-forms allow-modals"` —
-deliberately **without** `allow-same-origin` — which gives the iframe's
-content a unique opaque origin: its script still runs (the deck works),
-but it has zero access to this origin's cookies, storage, or same-site
-fetch credentials, sandboxed identically for the owner and for anonymous
-viewers. This only wraps the *live* view — `/d/:id/download` still serves
-the exact original bytes, unwrapped, so the file stays fully portable once
-saved locally. Full reasoning: `docs/DECISIONS.md`.
+`sandbox="allow-scripts allow-same-origin allow-popups allow-forms
+allow-modals"`. **As of 2026-09-20 this includes `allow-same-origin`**,
+reversing the original opaque-origin design (`docs/DECISIONS.md`
+2026-09-20 supersedes 2026-08-25): a deck embedding MapLibre GL JS v6
+(WebGL2-only, no WebGL1 fallback) rendered a permanently blank gray map,
+because browsers refuse to create a WebGL2 context inside a sandboxed
+iframe with an opaque origin — exactly what the sandbox produced without
+`allow-same-origin`. `allow-scripts` + `allow-same-origin` together are
+normally understood as removing sandbox isolation outright — the framed
+script gets this origin's real identity and CAN read/write this origin's
+cookies and storage. This is accepted **only** under the assumption that
+this platform serves content the owner generates themselves, not
+arbitrary third-party uploads; if that assumption changes, the fix is a
+dedicated separate hostname/subdomain for `'html'` decks (true origin
+isolation), not another change to this flag. This only wraps the *live*
+view — `/d/:id/download` still serves the exact original bytes, unwrapped,
+so the file stays fully portable once saved locally. Full reasoning:
+`docs/DECISIONS.md`.
 
 ## Sidebar: pinning, resizing, and a real preview panel
 
