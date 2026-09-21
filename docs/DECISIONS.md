@@ -14,6 +14,42 @@ Decision. Why. Pointers.
 
 ---
 
+## 2026-09-21 — Download PDF ships as client-side browser print, not server-side rendering
+
+**Decision.** The platform's new one-click "Download PDF" (reachable by any
+viewer with access to a deck, not just the owner) runs entirely in the
+VIEWER'S OWN BROWSER via `window.print()` / the iframe's own `print()`, not
+via a server-side headless-browser render. A `'bento'` deck reuses
+`slides/src/pdfexport.ts`'s existing one-slide-per-page print pipeline
+(already shipped for the editor's topbar button; now also wired to the
+read-only PLAYER card). An `'html'` deck gets a single seamless page sized
+to its measured content box, triggered from a button in `htmlDeckWrapper`
+that reaches into the now-same-origin sandboxed iframe (see the
+2026-09-20 entry below) to inject `@page` and call print.
+
+**Why.** The alternative considered was Cloudflare Browser Rendering (a
+real headless Chromium a Worker can drive via a Puppeteer-compatible API)
+generating the PDF server-side. That was explicitly rejected for this
+single-owner, free-tier-only platform: Browser Rendering is a separate,
+metered Cloudflare product, and a render-on-demand endpoint reachable by
+any viewer of a `'view'`-access deck (not gated to the owner) is a
+cost/abuse surface with no natural rate limit. Client-side print has none
+of that — it costs the platform nothing regardless of how many people
+click the button, needs no new Cloudflare binding, and (for `'bento'`
+decks) reuses a print pipeline that already existed and was already
+tested by real use, rather than duplicating per-slide rendering logic
+server-side. **If a future need arises that client-side print genuinely
+can't serve** (e.g. a guaranteed-byte-identical PDF independent of the
+viewer's own browser/OS font rendering), re-evaluate Browser Rendering
+then — don't reach for it as the default for this platform.
+
+**Pointers.** `slides/src/pdfexport.ts`, `slides/src/main.ts`'s
+`playerMode`, `slides/src/editor/editor.ts`'s `exportPdf`,
+`platform/worker/src/index.ts`'s `htmlDeckWrapper`, `CLAUDE.md`'s
+"Download PDF (v1)" bullet, `platform/README.md`.
+
+---
+
 ## 2026-09-20 — `'html'` deck sandbox gains `allow-same-origin`, superseding the 2026-08-25 opaque-origin design
 
 **Decision.** The sandboxed iframe that serves a live `kind:'html'` deck

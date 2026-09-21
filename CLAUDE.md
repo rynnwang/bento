@@ -214,6 +214,30 @@ Current feature set, all owner-only except where noted:
   each with its own guidance paragraph and loadable example; every pattern
   compiles through the identical schema, so this only changes what's asked
   of the AI, never what the platform can build.
+- **Download PDF (v1)** — every deck's live view now offers a one-click PDF
+  download, for ANY viewer with access (not just the owner), entirely via
+  the browser's own print-to-PDF pipeline: no server-side rendering, no
+  Cloudflare Browser Rendering binding, no third-party service, so it costs
+  nothing beyond what the platform already runs on free-tier CF Workers.
+  The two deck kinds get different treatment because they have different
+  page models: a `'bento'` deck knows its own slide count and aspect, so it
+  gets a REAL paginated PDF (one slide = one page, sized to the deck, states
+  excluded) — `slides/src/pdfexport.ts`'s `exportDeckPdf(doc)`, shared
+  between the full editor's pre-existing topbar button (`'edit'`-access
+  decks always boot the real editor for anyone with the link) and a NEW
+  button on the read-only PLAYER card (`main.ts`'s `playerMode`, `'view'`-
+  access decks) — a view-access link previously had no PDF path at all,
+  only Present/Save-a-copy. An `'html'` deck is opaque — no known page
+  model, sometimes not even authored with print CSS in mind — so it gets
+  the other universal option instead: ONE seamless page sized to the
+  deck's own measured content box, no page breaks. That button lives in
+  `htmlDeckWrapper` (`index.ts`) OUTSIDE the sandboxed iframe (an untrusted
+  deck's own script must never be able to fake the control); on click it
+  reaches into the iframe — possible only because of the `allow-same-origin`
+  sandbox change above — measures `scrollWidth/Height`, injects an
+  `@page { size: …; margin: 0 }` rule, and calls the iframe's own
+  `window.print()`. See `docs/DECISIONS.md` 2026-09-21 for why this is
+  client-side print rather than server-side rendering.
 - **`kind:'html'` decks** — a second, deliberately opaque deck kind
   alongside the compiled `'bento'` kind: a complete, self-running HTML slide
   deck some AIs will generate directly if asked (no `bento/slides` JSON at
@@ -630,7 +654,14 @@ list: `platform/README.md` "Known gaps".
   2.8s wall-clock settle guarantee lands entrances on starved render loops; never
   put entrance tweens on motion-path elements (transform conflict).
 - **Other format/runtime features**: `doc.fonts[]` (@font-face from assets at boot);
-  PDF export via print CSS (`@page` sized 1600×900, states excluded); state
+  PDF export via print CSS (`@page` sized to the deck's aspect, states
+  excluded) — the page-building logic lives in `src/pdfexport.ts`'s
+  `exportDeckPdf(doc)`, shared by the editor topbar's PDF button
+  (`editor.exportPdf()`, which just commits any open text edit first) and
+  the read-only player card's own PDF button (`main.ts`'s `playerMode`) so
+  a `doc.readonly` PLAYER file gets the identical export without the full
+  editor ever booting — see platform/'s "Download PDF" bullet for why this
+  needed splitting out of the Editor class; state
   "Sync from parent" (id-lineage merge — generators must emit deterministic
   element ids for it and for cross-state morphs); slide deletion cascades states
   and clears inbound links after confirm; `[`/`]` collapse the side panels.

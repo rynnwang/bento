@@ -968,6 +968,18 @@ await check('GET /d/:id for an html deck serves a sandboxed iframe wrapper, not 
   assert(!/<body>[\s\S]*<script>alert\(1\)<\/script>/.test(text.replace(/srcdoc="[^"]*"/, '')), 'script must not appear as live markup outside the sandboxed srcdoc')
 })
 
+await check('GET /d/:id for an html deck includes a client-side Download PDF control, outside the sandboxed iframe', async () => {
+  const res = await worker.fetch(new Request(`https://platform.example/d/${htmlDeckId}`), env)
+  const { text } = await readBody(res)
+  assert(res.status === 200, `expected 200, got ${res.status}`)
+  // The button and its trigger script must live in the WRAPPER, not be
+  // something the untrusted deck itself could forge — so they must appear
+  // outside the srcdoc attribute value.
+  const outsideSrcdoc = text.replace(/srcdoc="[^"]*"/, '')
+  assert(outsideSrcdoc.includes('id="bento-pdf-btn"'), 'expected a Download PDF button in the wrapper')
+  assert(outsideSrcdoc.includes('.print()'), 'expected the wrapper script to trigger the browser print pipeline')
+})
+
 await check('GET /d/:id/download for an html deck serves the raw file, not the wrapper', async () => {
   const res = await worker.fetch(new Request(`https://platform.example/d/${htmlDeckId}/download`), env)
   const { text } = await readBody(res)

@@ -137,6 +137,22 @@ view — `/d/:id/download` still serves the exact original bytes, unwrapped,
 so the file stays fully portable once saved locally. Full reasoning:
 `docs/DECISIONS.md`.
 
+**Download PDF (v1).** Every deck's live view — `'bento'` or `'html'`, any
+viewer with access, not just the owner — offers a one-click PDF download
+via the browser's own print-to-PDF pipeline, client-side only: no
+Cloudflare Browser Rendering, no third-party rendering service, no per-
+render server cost, so it stays on the free tier. A `'bento'` deck gets a
+real paginated PDF (one slide = one page, sized to the deck's own aspect)
+via `slides/src/pdfexport.ts`'s shared `exportDeckPdf`, now reachable from
+the read-only PLAYER card too (previously only the full editor had it). An
+`'html'` deck has no page model to rely on, so it gets a single seamless
+page instead, sized to its measured content box — a button in
+`htmlDeckWrapper` itself (outside the sandboxed iframe, so the deck's own
+script can never forge it) reaches into the iframe via the
+`allow-same-origin` grant above, injects `@page { size: …; margin: 0 }`,
+and calls the iframe's own `window.print()`. See `docs/DECISIONS.md`
+2026-09-21.
+
 ## Sidebar: pinning, resizing, and a real preview panel
 
 - **Pin** (`migrations/0006_pinned.sql`'s `decks.pinned`, `PATCH

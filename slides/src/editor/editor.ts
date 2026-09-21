@@ -9,13 +9,14 @@ import {
   MEDIA_EMBED_BUDGET,
   applyChartPalette, applyLayout, builtinLayouts, defaultChart, defaultCode, defaultImage, defaultMedia, defaultShape, defaultTable, defaultText,
   instantiateLayout, isLightBg, layoutElementIds, newDocId, parseDoc, readableInk, syncLinkedChart, uid,
-  paginates, inLinearFlow,
+  paginates,
   type ChartElement, type ShapeKind, type Slide, type SlideElement, type TableElement } from '../model'
 import { THEME_CHOICES, setTheme, themeChoice } from '../../../kernel/src/theme.ts'
 import type { InPlaceOutcome } from '../update'
 import { APP_VERSION, applyUpdate, applyUpdateInPlace, autoCheckEnabled, canUpdateInPlace, checkForUpdates, compareVersions, offlineEnabled, setAutoCheck, setOffline } from '../update'
 import { CHART_PRESETS } from '../charts'
-import { renderSlide, renderThumbnail } from '../render'
+import { renderThumbnail } from '../render'
+import { exportDeckPdf } from '../pdfexport.ts'
 import { paletteSignature, resolveThemeRefs } from '../palette'
 import { SlideCanvas } from './canvas'
 import { PropsPanel } from './panels'
@@ -1921,40 +1922,14 @@ export class Editor {
   }
 
   /**
-   * Export the deck to PDF via the browser's print pipeline: every linear
-   * slide becomes one exact 1600×900 page. Anything outside the linear flow
-   * stays off the paper: a state is reachable only through interaction, and a
-   * hidden slide is material the audience was not meant to be handed.
+   * Export the deck to PDF via the browser's print pipeline — the actual
+   * page-building logic is shared with the read-only player card (see
+   * pdfexport.ts), since it needs no Editor instance. Only the text-commit
+   * is editor-specific.
    */
   exportPdf() {
     this.canvas.commitTextEdit()
-    document.getElementById('bento-print')?.remove()
-    const box = div('')
-    box.id = 'bento-print'
-    // page geometry follows the deck's aspect (width normalised to 1600)
-    const pageH = Math.round((1600 * this.store.doc.size.height) / this.store.doc.size.width)
-    const pageCss = document.createElement('style')
-    pageCss.textContent = `@page { size: 1600px ${pageH}px; margin: 0; } #bento-print .bp-page { height: ${pageH}px; }`
-    box.appendChild(pageCss)
-    for (const slide of this.store.doc.slides) {
-      if (!inLinearFlow(slide)) continue
-      const page = div('bp-page')
-      const surface = renderSlide(slide, this.store.doc, { svgAsImage: true, hidePlaceholders: true })
-      // normalise to the print page size regardless of doc size
-      const s = 1600 / this.store.doc.size.width
-      surface.style.transformOrigin = '0 0'
-      if (s !== 1) surface.style.transform = `scale(${s})`
-      page.appendChild(surface)
-      box.appendChild(page)
-    }
-    document.body.appendChild(box)
-    const cleanup = () => {
-      box.remove()
-      window.removeEventListener('afterprint', cleanup)
-    }
-    window.addEventListener('afterprint', cleanup)
-    // give the freshly-inserted images a beat to decode before printing
-    setTimeout(() => window.print(), 250)
+    exportDeckPdf(this.store.doc)
   }
 
   // --- insert image ------------------------------------------------------------------
