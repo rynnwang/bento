@@ -213,14 +213,74 @@ function extractHtmlTitle(rawHtml: string): string {
  *  serves the raw bytes so the file is fully portable once saved.
  *  `srcdoc` needs the payload escaped as a double-quoted HTML attribute
  *  (not the same escaping as element content — `<`/`>` are fine here,
- *  `"` is not). */
+ *  `"` is not).
+ *
+ *  **Download PDF (v1)**: a small button in THIS wrapper (never inside the
+ *  sandboxed iframe — an untrusted deck's own script must never be able to
+ *  fake the control) triggers the browser's own print-to-PDF, entirely
+ *  client-side — no server rendering, no third-party service, no Cloudflare
+ *  product to meter or pay for, so it costs nothing beyond what's already
+ *  free. `allow-same-origin` (above) is what makes this possible at all:
+ *  `iframe.contentDocument` would throw across an opaque origin. Unlike a
+ *  `'bento'` deck (see pdfexport.ts's one-slide-per-page export, which knows
+ *  the deck's real page model), an uploaded 'html' deck has no page concept
+ *  Bento can rely on — it might be a report, a single long page, anything —
+ *  so the one universal, safe default is a SEAMLESS single page sized to
+ *  the deck's own measured content box, no page breaks to fight arbitrary
+ *  print CSS (or the total absence of any) never written with pagination in
+ *  mind. `PDF_MAX_DIM` just keeps a runaway measurement (an infinite-scroll
+ *  deck, say) from asking the browser to rasterize something absurd. */
 function htmlDeckWrapper(rawHtml: string, title: string): string {
   const srcdocEscaped = rawHtml.replace(/&/g, '&amp;').replace(/"/g, '&quot;')
   const titleEscaped = title.replace(/&/g, '&amp;').replace(/</g, '&lt;')
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>${titleEscaped}</title>
-<style>html,body{margin:0;height:100%;background:#0D1B2E}iframe{border:0;width:100vw;height:100vh;display:block}</style>
-</head><body><iframe sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals" srcdoc="${srcdocEscaped}"></iframe></body></html>`
+<style>
+html,body{margin:0;height:100%;background:#0D1B2E}
+iframe{border:0;width:100vw;height:100vh;display:block}
+#bento-pdf-btn{position:fixed;top:14px;right:14px;z-index:10;padding:8px 14px;border:1px solid rgb(255 255 255 / 0.25);
+  border-radius:999px;background:rgb(13 27 46 / 0.55);backdrop-filter:blur(6px);color:#fff;font:13px/1 -apple-system,
+  BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;cursor:pointer}
+#bento-pdf-btn:hover{background:rgb(13 27 46 / 0.8)}
+</style>
+</head><body>
+<iframe id="bento-html-frame" sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals" srcdoc="${srcdocEscaped}"></iframe>
+<button id="bento-pdf-btn" type="button">⬇ Download PDF</button>
+<script>
+(function () {
+  var PDF_MAX_DIM = 20000 // px — a sane ceiling on a measured content box
+  var btn = document.getElementById('bento-pdf-btn')
+  var frame = document.getElementById('bento-html-frame')
+  btn.addEventListener('click', function () {
+    var win, doc
+    try {
+      win = frame.contentWindow
+      doc = frame.contentDocument
+      if (!win || !doc) throw new Error('no same-origin access to the deck frame')
+      var root = doc.documentElement
+      var body = doc.body
+      var w = Math.min(frame.clientWidth || root.clientWidth, PDF_MAX_DIM)
+      var h = Math.min(Math.max(root.scrollHeight, body ? body.scrollHeight : 0, frame.clientHeight || 0), PDF_MAX_DIM)
+      var style = doc.createElement('style')
+      style.setAttribute('data-bento-pdf', '1')
+      style.textContent = '@page{size:' + w + 'px ' + h + 'px;margin:0}html,body{margin:0 !important}'
+      doc.head.appendChild(style)
+      var cleanup = function () {
+        style.remove()
+        win.removeEventListener('afterprint', cleanup)
+      }
+      win.addEventListener('afterprint', cleanup)
+      win.focus()
+      win.print()
+    } catch (e) {
+      // Cross-origin or otherwise inaccessible frame content — fall back to
+      // printing the page as the browser sees it rather than doing nothing.
+      window.print()
+    }
+  })
+})()
+<\/script>
+</body></html>`
 }
 
 const MAX_HTML_DECK_BYTES = 8 * 1024 * 1024 // matches the image-asset cap (MEDIA_EMBED_BUDGET convention)

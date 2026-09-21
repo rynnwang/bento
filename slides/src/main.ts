@@ -28,6 +28,7 @@ import { Editor } from './editor/editor'
 import { startPresentation } from './present'
 import { SyncSession } from './sync/session'
 import { onlineTransport, startSharing, stopSharing } from './sync/online'
+import { exportDeckPdf } from './pdfexport.ts'
 
 // Tell the kernel who this app is — must precede any kernel module use
 // (window title suffix, save-picker label, update manifest + its `app` check).
@@ -151,6 +152,7 @@ function playerMode(doc: BentoDoc) {
     `<div class="ed-playercard"><h1>${doc.title.replace(/</g, '&lt;')}</h1>` +
     `<p>${t('This is a presentation package — view and present only.')}</p>` +
     `<button class="ed-playgo">▶&nbsp; ${t('Present')}</button>` +
+    `<button class="ed-playpdf">⬇&nbsp; ${t('Export PDF (print)')}</button>` +
     `<button class="ed-playcopy">⤓&nbsp; ${t('Save a copy')}</button></div>`
   document.body.appendChild(card)
   const start = () => {
@@ -160,6 +162,10 @@ function playerMode(doc: BentoDoc) {
     })
   }
   card.querySelector('.ed-playgo')!.addEventListener('click', start)
+  // Shares the exact page-building logic the full editor's topbar PDF button
+  // uses (pdfexport.ts) — a view-access link gets the same one-slide-per-page
+  // export without ever booting the editor.
+  card.querySelector('.ed-playpdf')!.addEventListener('click', () => exportDeckPdf(doc))
   card.querySelector('.ed-playcopy')!.addEventListener('click', () => {
     void serializeAuto(doc).then((html) => downloadFile(html, suggestedFileName(doc)))
   })

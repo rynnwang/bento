@@ -2350,7 +2350,7 @@ body.ed-col-resizing { cursor: col-resize; user-select: none; }
   color: #0D1B2E;
   background: linear-gradient(180deg, #FFB29B, #ED8266);
 }
-.ed-playercard button.ed-playcopy {
+.ed-playercard button.ed-playcopy, .ed-playercard button.ed-playpdf {
   background: none;
   color: #fff;
   border: 1px solid rgb(255 255 255 / 0.3);
