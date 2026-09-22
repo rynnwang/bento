@@ -14,6 +14,44 @@ Decision. Why. Pointers.
 
 ---
 
+## 2026-09-23 — `'html'` deck PDFs get an explicit page margin (Puppeteer's `margin` is opt-in, not sane-default)
+
+**Decision.** `platform/worker/src/pdf.ts`'s `renderHtmlDeckPdf` now passes
+an explicit `margin: { top, bottom, left, right }` (a new
+`HTML_DECK_PDF_MARGIN` constant, `'20mm'`) to `page.pdf()`. Bumped
+`PDF_RENDER_VERSION` to 3 (same mechanism as the pagination fix above — a
+rendering-logic change must never keep being served from a cache entry
+produced by older, now-wrong logic).
+
+**Why.** The standard-pagination fix immediately above this entry shipped
+without ever setting `margin` — the assumption, stated in that entry's own
+doc comment, was that omitting it would fall back to "Chromium's own
+default margins." Verified this was WRONG the moment the fix reached
+production: the reporter's own next screenshot showed every page's content
+running right up to the paper edge, same as before. Puppeteer's own
+`PDFOptions.margin` docs are explicit that leaving it unset means **no**
+margin is applied at all, not an implicit "normal document margin" —
+confirmed directly (not just re-read the docs and trusted them this time):
+rendered the identical deck locally via `puppeteer-core` against a real
+installed Chrome, once with `margin` omitted (content flush to every
+edge, matching the reported bug exactly) and once with the new explicit
+`20mm` margin (content correctly inset on all sides). Also verified,
+separately, that the `'bento'` deck path (`renderBentoDeckPdf`, no
+`margin` option either) is NOT affected by the same gap: its own
+`@page { size: …; margin: 0 }` CSS rule (`slides/src/pdfexport.ts`'s
+`buildPrintBox`) is honored correctly by `preferCSSPageSize` even with no
+`margin` option set, confirmed with an isolated full-bleed-content test —
+zero margin is the CORRECT, intended output there (a slide should fill
+its page edge-to-edge), so nothing needed changing on that path.
+
+**Pointers.** `platform/worker/src/pdf.ts` (`HTML_DECK_PDF_MARGIN`,
+`PDF_RENDER_VERSION`), `platform/worker/test/router.test.mjs`'s
+`CURRENT_PDF_RENDER_VERSION` (kept in sync by hand — the test can't import
+the real constant, only the bundled worker's `fetch` export is reachable
+there).
+
+---
+
 ## 2026-09-23 — `'html'` deck PDFs use standard multi-page pagination, not a forced single seamless page
 
 **Decision.** `platform/worker/src/pdf.ts`'s `renderHtmlDeckPdf` no longer

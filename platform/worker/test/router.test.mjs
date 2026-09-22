@@ -493,7 +493,7 @@ await check('GET /d/:id announces server-side PDF rendering to the booting app (
 // Must match pdf.ts's PDF_RENDER_VERSION — the test can't import it directly
 // (only the bundled worker's default {fetch} export is reachable here), so
 // this is re-declared, same as the `pdf/<id>.pdf` key shape a few lines down.
-const CURRENT_PDF_RENDER_VERSION = '2'
+const CURRENT_PDF_RENDER_VERSION = '3'
 
 let pdfCacheDeckId
 await check('GET /d/:id/pdf serves a cached render directly, without touching Browser Rendering at all', async () => {

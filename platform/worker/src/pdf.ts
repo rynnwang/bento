@@ -27,11 +27,16 @@ const VIEWPORT_WIDTH = 1280 // matches slides/'s own 16:9 default deck width
  *  changes — folded into the R2 cache key (store.ts's getCachedPdf/
  *  putCachedPdf) alongside the deck's own `updated_at`, so a rendering fix
  *  can never keep serving bytes produced by the OLD, now-wrong logic just
- *  because the deck itself hasn't changed. See docs/DECISIONS.md 2026-09-23:
- *  v1 forced a single giant seamless page for every 'html' deck, which
- *  ignored a deck's own hand-authored `@media print` CSS and produced an
- *  unreadable result for ordinary multi-section reports. */
-export const PDF_RENDER_VERSION = 2
+ *  because the deck itself hasn't changed. History: v1 forced a single
+ *  giant seamless page for every 'html' deck, ignoring a deck's own
+ *  hand-authored `@media print` CSS (docs/DECISIONS.md 2026-09-23). v2
+ *  switched to standard pagination but left `margin` unset — Puppeteer's
+ *  own docs are explicit that an unset margin means NO margin is applied,
+ *  not some implicit sane default, so v2 still shipped with content
+ *  running edge-to-edge on every page (verified against a real render,
+ *  not assumed — docs/DECISIONS.md 2026-09-23 second entry). v3 sets an
+ *  explicit default margin. */
+export const PDF_RENDER_VERSION = 3
 
 /** Render an already-live 'bento' deck (navigated to its own `/d/:id` — the
  *  URL a real viewer would open, so editor-vs-player mode and access level
@@ -56,10 +61,18 @@ export async function renderBentoDeckPdf(env: Env, viewUrl: string): Promise<Buf
   }
 }
 
+/** Default page margin for an 'html' deck that declares no `@page { margin }`
+ *  of its own — Puppeteer's `margin` PDFOption is explicitly undefined-means-
+ *  NONE, not "browser's usual print margin" (confirmed the hard way: v2
+ *  shipped without this and every page ran edge-to-edge). 20mm is an
+ *  ordinary "normal margins" document default, comparable to what Word/
+ *  Google Docs use out of the box. */
+const HTML_DECK_PDF_MARGIN = '20mm'
+
 /** Render an 'html' deck's raw bytes to a normal, STANDARD-PAGINATED PDF —
  *  the same shape any "Print to PDF" of an ordinary web page produces:
- *  A4-ish pages, Chromium's own default margins, breaking wherever the
- *  content naturally falls. `preferCSSPageSize: true` lets the deck's OWN
+ *  A4-ish pages, a normal document margin, breaking wherever the content
+ *  naturally falls. `preferCSSPageSize: true` lets the deck's OWN
  *  `@page`/`@media print` rules win when it has them — many AI-generated
  *  reports do (this one's own print stylesheet hides its sidebar nav,
  *  resets to a single column, and marks tables/figures `break-inside:
@@ -68,23 +81,38 @@ export async function renderBentoDeckPdf(env: Env, viewUrl: string): Promise<Buf
  *  2026-09-23): mechanically seamless, but no reasonable PDF viewer shows a
  *  page several thousand points tall at a readable zoom, so a real
  *  multi-section document came out unreadable. A deck with NO print CSS at
- *  all just gets Chromium's ordinary default pagination — the same
- *  reasonable fallback "Ctrl+P → Save as PDF" already gives on any page.
- *  Feeds the raw bytes directly via `page.setContent`, bypassing the
- *  sandboxed-iframe wrapper (`htmlDeckWrapper`) entirely — this headless
- *  browser instance has no ambient session or cookies to protect (a fresh,
- *  throwaway context per render), so the cross-origin-cookie-theft threat
- *  model the sandbox exists for simply does not apply here. External
- *  resources (a `<script src>` CDN reference, say) still load normally over
- *  this instance's own network access; `waitUntil: 'networkidle0'` waits
- *  for them. */
+ *  all just gets Chromium's ordinary default pagination plus
+ *  HTML_DECK_PDF_MARGIN — the same reasonable fallback "Ctrl+P → Save as
+ *  PDF" already gives on any page. `margin` here is an explicit OVERRIDE,
+ *  not a CSS-aware default — a deck that ever needs a genuinely different
+ *  margin (or a deliberate full-bleed `@page{margin:0}`) would need this
+ *  hardcoded value replaced with real per-deck margin support; not needed
+ *  yet, so not built yet. Feeds the raw bytes directly via
+ *  `page.setContent`, bypassing the sandboxed-iframe wrapper
+ *  (`htmlDeckWrapper`) entirely — this headless browser instance has no
+ *  ambient session or cookies to protect (a fresh, throwaway context per
+ *  render), so the cross-origin-cookie-theft threat model the sandbox
+ *  exists for simply does not apply here. External resources (a
+ *  `<script src>` CDN reference, say) still load normally over this
+ *  instance's own network access; `waitUntil: 'networkidle0'` waits for
+ *  them. */
 export async function renderHtmlDeckPdf(env: Env, rawHtml: string): Promise<Buffer> {
   const browser = await puppeteer.launch(env.BROWSER)
   try {
     const page = await browser.newPage()
     await page.setViewport({ width: VIEWPORT_WIDTH, height: 800 })
     await page.setContent(rawHtml, { waitUntil: 'networkidle0' })
-    return await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true })
+    return await page.pdf({
+      format: 'A4',
+      printBackground: true,
+      preferCSSPageSize: true,
+      margin: {
+        top: HTML_DECK_PDF_MARGIN,
+        bottom: HTML_DECK_PDF_MARGIN,
+        left: HTML_DECK_PDF_MARGIN,
+        right: HTML_DECK_PDF_MARGIN,
+      },
+    })
   } finally {
     await browser.close()
   }
