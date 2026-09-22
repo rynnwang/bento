@@ -162,7 +162,20 @@ reads the result via `page.pdf({preferCSSPageSize:true})`. An `'html'`
 deck's raw bytes go straight into `page.setContent()`, bypassing
 `htmlDeckWrapper`'s sandboxed iframe entirely (a fresh, throwaway browser
 context has no ambient session for that sandbox's threat model to
-protect), for a single seamless page sized to the measured content box.
+protect), for STANDARD multi-page pagination
+(`page.pdf({format:'A4', preferCSSPageSize:true})` — the same shape any
+ordinary browser "Print to PDF" produces), letting the deck's own
+`@media print` CSS win when it declares one. **As of 2026-09-23** this
+replaced an earlier "single seamless page sized to the measured content
+box" default: verified against a real multi-section report deck (its own
+hand-authored print stylesheet included) that the seamless approach
+produced an unreadable ~5789pt-tall page and ignored that stylesheet
+entirely, while standard pagination produced 8 clean A4 pages respecting
+it — see `docs/DECISIONS.md` 2026-09-23. `pdf.ts`'s `PDF_RENDER_VERSION`
+is folded into the R2 cache key alongside `updated_at` (`store.ts`'s
+`getCachedPdf`/`putCachedPdf` now take both) specifically so a
+rendering-logic fix like this one can never keep being served from a
+stale cache entry produced by the old logic.
 
 Both the editor topbar button and the player card check
 `kernel/src/save.ts`'s `hostPdfUrl()` — a new host-capability reader

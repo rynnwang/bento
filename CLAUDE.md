@@ -240,9 +240,19 @@ Current feature set, all owner-only except where noted:
   via `page.pdf({preferCSSPageSize:true})`. An `'html'` deck's raw bytes go
   straight into `page.setContent()` — bypassing `htmlDeckWrapper`'s
   sandboxed iframe entirely, since a fresh throwaway browser context has no
-  ambient session for the sandbox's threat model to protect — for a single
-  seamless page sized to the measured content box, no page breaks. Both the
-  editor topbar button and the player card check a new host-capability
+  ambient session for the sandbox's threat model to protect — for STANDARD
+  multi-page pagination (`page.pdf({format:'A4', preferCSSPageSize:true})`,
+  same shape as any ordinary "Print to PDF"), letting the deck's own
+  `@media print` CSS win when it has one. **As of 2026-09-23** this
+  replaced an earlier "single seamless page sized to the measured content
+  box" default — verified directly against a real multi-section report
+  deck that it produced an unreadable ~5789pt-tall page and threw away the
+  deck's own hand-authored print stylesheet; `docs/DECISIONS.md` 2026-09-23
+  has the full story, including why "seamless" wasn't kept as an opt-in.
+  `PDF_RENDER_VERSION` (`pdf.ts`) is folded into the R2 cache key alongside
+  `updated_at` specifically so a rendering-logic fix like this one can
+  never keep being served from a stale cache entry. Both the editor
+  topbar button and the player card check a new host-capability
   reader, `kernel/src/save.ts`'s `hostPdfUrl()` (mirrors the existing
   `hostCan()`/`window.__bentoHost` pattern, but does NOT gate on
   `showSaveFilePicker` the way `hostCan` does — unrelated condition). The

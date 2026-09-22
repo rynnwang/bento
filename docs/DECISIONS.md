@@ -14,6 +14,51 @@ Decision. Why. Pointers.
 
 ---
 
+## 2026-09-23 — `'html'` deck PDFs use standard multi-page pagination, not a forced single seamless page
+
+**Decision.** `platform/worker/src/pdf.ts`'s `renderHtmlDeckPdf` no longer
+measures the page's content box and forces one giant custom-sized page.
+It now calls `page.pdf({ format: 'A4', printBackground: true,
+preferCSSPageSize: true })` — Chromium's ordinary print pagination, the
+same shape any "Print to PDF" of a web page produces. `preferCSSPageSize`
+lets the deck's OWN `@page`/`@media print` CSS win when it declares one
+(many AI-generated reports do); a deck with none just gets plain default
+A4 pagination. Bumped `PDF_RENDER_VERSION` (now folded into the R2 cache
+key alongside `updated_at` — `store.ts`'s `getCachedPdf`/`putCachedPdf`
+now take a third `renderVersion` argument) specifically so this fix can't
+keep being masked by a stale cache entry produced by the old logic on a
+deck whose content hasn't changed.
+
+**Why.** Verified directly against a real user-supplied deck (a
+Chinese-language multi-section proposal document with a table of
+contents, SVG diagrams, and its own hand-authored `@media print`
+stylesheet — hiding its sidebar nav, resetting to a single column, 11pt
+type, `break-inside: avoid` on tables/figures/entries): the OLD logic's
+"seamless single page" (2026-09-22's v2 default) produced a mechanically
+correct but practically unreadable ~960×5789pt page — no ordinary PDF
+viewer shows a page that tall at a usable zoom, so a genuine multi-section
+report came out worse than useless, and the deck's own carefully-authored
+print CSS was thrown away entirely rather than honored. Re-rendered
+locally with `preferCSSPageSize`-driven standard pagination against the
+IDENTICAL source HTML: 8 clean, correctly-broken A4 pages, headings/
+tables/figures intact, CJK glyphs rendering correctly (that part was
+never the problem — confirmed by inspection, not assumed). The
+"seamless single page" idea was a solution to a problem (page-break
+awkwardness) that ordinary Chromium pagination combined with a page's own
+print CSS — or, absent that, Chromium's already-reasonable default
+pagination — already handles at least as well, for the overwhelmingly
+common case of an `'html'` deck being genuine prose/report content rather
+than a single poster-style graphic. Not reintroduced as an opt-in mode:
+no request for one, and the added complexity/surface isn't earned without
+one.
+
+**Pointers.** `platform/worker/src/pdf.ts` (`renderHtmlDeckPdf`,
+`PDF_RENDER_VERSION`), `store.ts`'s PDF cache functions, `index.ts`'s
+`handlePdf`, `platform/worker/test/router.test.mjs`'s render-version
+staleness test.
+
+---
+
 ## 2026-09-22 — Download PDF switches to server-side rendering (Cloudflare Browser Rendering), superseding the 2026-09-21 client-side-print decision
 
 **Decision.** Download PDF now renders server-side via Cloudflare Browser

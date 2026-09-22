@@ -129,7 +129,7 @@ import {
 import { renderDemoPage } from './demo.ts'
 import { renderSetupPage, renderLoginPage } from './authPages.ts'
 import { renderDeckPasswordGate } from './sharePage.ts'
-import { renderBentoDeckPdf, renderHtmlDeckPdf } from './pdf.ts'
+import { renderBentoDeckPdf, renderHtmlDeckPdf, PDF_RENDER_VERSION } from './pdf.ts'
 import { faviconResponse } from './favicon.ts'
 import { parseOutline } from './compile/schema.ts'
 import { compileOutline } from './compile/compile.ts'
@@ -773,7 +773,7 @@ async function handlePdf(req: Request, env: Env, id: string): Promise<Response> 
     'content-disposition': `attachment; filename="${filename}.pdf"`,
   }
 
-  const cached = await getCachedPdf(env, id, meta.updated_at)
+  const cached = await getCachedPdf(env, id, meta.updated_at, PDF_RENDER_VERSION)
   if (cached) return new Response(cached, { headers: pdfHeaders })
 
   let bytes: ArrayBuffer
@@ -787,7 +787,7 @@ async function handlePdf(req: Request, env: Env, id: string): Promise<Response> 
     const origin = new URL(req.url).origin
     bytes = await renderBentoDeckPdf(env, `${origin}/d/${id}`)
   }
-  await putCachedPdf(env, id, meta.updated_at, bytes)
+  await putCachedPdf(env, id, meta.updated_at, PDF_RENDER_VERSION, bytes)
   return new Response(bytes, { headers: pdfHeaders })
 }
 
