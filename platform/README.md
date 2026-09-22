@@ -163,19 +163,29 @@ deck's raw bytes go straight into `page.setContent()`, bypassing
 `htmlDeckWrapper`'s sandboxed iframe entirely (a fresh, throwaway browser
 context has no ambient session for that sandbox's threat model to
 protect), for STANDARD multi-page pagination
-(`page.pdf({format:'A4', preferCSSPageSize:true})` — the same shape any
-ordinary browser "Print to PDF" produces), letting the deck's own
-`@media print` CSS win when it declares one. **As of 2026-09-23** this
+(`page.pdf({format:'A4', preferCSSPageSize:true, margin:{…}})` — the same
+shape any ordinary browser "Print to PDF" produces), letting the deck's
+own `@media print` CSS win when it declares one. **As of 2026-09-23** this
 replaced an earlier "single seamless page sized to the measured content
 box" default: verified against a real multi-section report deck (its own
 hand-authored print stylesheet included) that the seamless approach
 produced an unreadable ~5789pt-tall page and ignored that stylesheet
 entirely, while standard pagination produced 8 clean A4 pages respecting
-it — see `docs/DECISIONS.md` 2026-09-23. `pdf.ts`'s `PDF_RENDER_VERSION`
-is folded into the R2 cache key alongside `updated_at` (`store.ts`'s
-`getCachedPdf`/`putCachedPdf` now take both) specifically so a
-rendering-logic fix like this one can never keep being served from a
-stale cache entry produced by the old logic.
+it. **A same-day follow-up fix**: the first standard-pagination cut left
+`margin` unset, wrongly assuming Chromium would fall back to a sane
+default — Puppeteer's own `PDFOptions.margin` docs say unset means NO
+margin at all, confirmed when the reported page still ran edge-to-edge in
+production; `HTML_DECK_PDF_MARGIN` (`'20mm'`, `pdf.ts`) fixes it, verified
+locally against the actual reported deck (real Chrome via
+`puppeteer-core`) before reshipping. The `'bento'` deck path needed no
+equivalent fix — its own `@page{margin:0}` CSS is correctly honored by
+`preferCSSPageSize` with no `margin` option, confirmed separately with an
+isolated full-bleed test; zero margin is the intended output there. See
+`docs/DECISIONS.md` 2026-09-23 (two entries) for both fixes. `pdf.ts`'s
+`PDF_RENDER_VERSION` (now 3) is folded into the R2 cache key alongside
+`updated_at` (`store.ts`'s `getCachedPdf`/`putCachedPdf` now take both)
+specifically so a rendering-logic fix like either of these can never keep
+being served from a stale cache entry produced by older, now-wrong logic.
 
 Both the editor topbar button and the player card check
 `kernel/src/save.ts`'s `hostPdfUrl()` — a new host-capability reader
