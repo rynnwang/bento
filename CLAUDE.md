@@ -214,30 +214,45 @@ Current feature set, all owner-only except where noted:
   each with its own guidance paragraph and loadable example; every pattern
   compiles through the identical schema, so this only changes what's asked
   of the AI, never what the platform can build.
-- **Download PDF (v1)** — every deck's live view now offers a one-click PDF
-  download, for ANY viewer with access (not just the owner), entirely via
-  the browser's own print-to-PDF pipeline: no server-side rendering, no
-  Cloudflare Browser Rendering binding, no third-party service, so it costs
-  nothing beyond what the platform already runs on free-tier CF Workers.
-  The two deck kinds get different treatment because they have different
-  page models: a `'bento'` deck knows its own slide count and aspect, so it
-  gets a REAL paginated PDF (one slide = one page, sized to the deck, states
-  excluded) — `slides/src/pdfexport.ts`'s `exportDeckPdf(doc)`, shared
-  between the full editor's pre-existing topbar button (`'edit'`-access
-  decks always boot the real editor for anyone with the link) and a NEW
-  button on the read-only PLAYER card (`main.ts`'s `playerMode`, `'view'`-
-  access decks) — a view-access link previously had no PDF path at all,
-  only Present/Save-a-copy. An `'html'` deck is opaque — no known page
-  model, sometimes not even authored with print CSS in mind — so it gets
-  the other universal option instead: ONE seamless page sized to the
-  deck's own measured content box, no page breaks. That button lives in
-  `htmlDeckWrapper` (`index.ts`) OUTSIDE the sandboxed iframe (an untrusted
-  deck's own script must never be able to fake the control); on click it
-  reaches into the iframe — possible only because of the `allow-same-origin`
-  sandbox change above — measures `scrollWidth/Height`, injects an
-  `@page { size: …; margin: 0 }` rule, and calls the iframe's own
-  `window.print()`. See `docs/DECISIONS.md` 2026-09-21 for why this is
-  client-side print rather than server-side rendering.
+- **Download PDF (v2)** — every deck's live view offers a one-click PDF
+  download, for ANY viewer with access (not just the owner). **As of
+  2026-09-22 this is SERVER-RENDERED**, via Cloudflare Browser Rendering
+  (`@cloudflare/puppeteer`, `env.ts`'s `BROWSER` binding,
+  `platform/worker/src/pdf.ts`) — `GET /d/:id/pdf` (`handlePdf` in
+  `index.ts`, same access/private/password gating as `GET /d/:id`) returns
+  a real `application/pdf` file directly, no print dialog. This reverses
+  the 2026-09-21 v1 decision (`docs/DECISIONS.md`): a visitor's own browser
+  print dialog's margin/scale defaults produced bad output for real content
+  (diagrams, tables) — a server-controlled Chromium removes that variable.
+  Cached in R2 (`store.ts`'s `getCachedPdf`/`putCachedPdf`, one object per
+  deck keyed to `updated_at` via `customMetadata`, not a content hash) so a
+  repeat download of an unchanged deck never touches Browser Rendering's
+  tight free tier (10 browser-minutes/day as of writing) — a render happens
+  once per edit, not once per download. The two deck kinds still get
+  different treatment because they have different page models: a `'bento'`
+  deck gets a REAL paginated PDF (one slide = one page, sized to the deck,
+  states excluded) — Puppeteer navigates to the deck's own live `/d/:id`
+  URL (whatever a real viewer would see) and calls
+  `window.bento.preparePdf()`, which both editor and player mode now
+  expose (`slides/src/pdfexport.ts`'s `buildPrintBox`, split out of
+  `exportDeckPdf` specifically so a server render can build the identical
+  `#bento-print` box without also calling `window.print()`), then reads it
+  via `page.pdf({preferCSSPageSize:true})`. An `'html'` deck's raw bytes go
+  straight into `page.setContent()` — bypassing `htmlDeckWrapper`'s
+  sandboxed iframe entirely, since a fresh throwaway browser context has no
+  ambient session for the sandbox's threat model to protect — for a single
+  seamless page sized to the measured content box, no page breaks. Both the
+  editor topbar button and the player card check a new host-capability
+  reader, `kernel/src/save.ts`'s `hostPdfUrl()` (mirrors the existing
+  `hostCan()`/`window.__bentoHost` pattern, but does NOT gate on
+  `showSaveFilePicker` the way `hostCan` does — unrelated condition). The
+  platform announces `window.__bentoHost = {ops:['pdf-download'],
+  pdfUrl:'/d/:id/pdf'}` right after `<head>` on every live view (never on
+  `/d/:id/download` — a portable file must not point at a URL relative to
+  one deployment); with no such host, both buttons fall back to the
+  original v1 local `exportDeckPdf()` print path, which still exists and
+  still works fully offline. Full tradeoff/rationale: `docs/DECISIONS.md`
+  2026-09-22.
 - **`kind:'html'` decks** — a second, deliberately opaque deck kind
   alongside the compiled `'bento'` kind: a complete, self-running HTML slide
   deck some AIs will generate directly if asked (no `bento/slides` JSON at

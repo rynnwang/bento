@@ -137,21 +137,43 @@ view — `/d/:id/download` still serves the exact original bytes, unwrapped,
 so the file stays fully portable once saved locally. Full reasoning:
 `docs/DECISIONS.md`.
 
-**Download PDF (v1).** Every deck's live view — `'bento'` or `'html'`, any
-viewer with access, not just the owner — offers a one-click PDF download
-via the browser's own print-to-PDF pipeline, client-side only: no
-Cloudflare Browser Rendering, no third-party rendering service, no per-
-render server cost, so it stays on the free tier. A `'bento'` deck gets a
-real paginated PDF (one slide = one page, sized to the deck's own aspect)
-via `slides/src/pdfexport.ts`'s shared `exportDeckPdf`, now reachable from
-the read-only PLAYER card too (previously only the full editor had it). An
-`'html'` deck has no page model to rely on, so it gets a single seamless
-page instead, sized to its measured content box — a button in
-`htmlDeckWrapper` itself (outside the sandboxed iframe, so the deck's own
-script can never forge it) reaches into the iframe via the
-`allow-same-origin` grant above, injects `@page { size: …; margin: 0 }`,
-and calls the iframe's own `window.print()`. See `docs/DECISIONS.md`
-2026-09-21.
+**Download PDF (v2).** Every deck's live view — `'bento'` or `'html'`, any
+viewer with access, not just the owner — offers a one-click PDF download.
+**As of 2026-09-22 this is server-rendered** via Cloudflare Browser
+Rendering (`@cloudflare/puppeteer`, `env.ts`'s `BROWSER` binding,
+`platform/worker/src/pdf.ts`): `GET /d/:id/pdf` (`handlePdf` in `index.ts`,
+same access/private/password gating as `GET /d/:id`) returns a real
+`application/pdf` file directly — no print dialog. This reverses the
+2026-09-21 v1 decision (client-side `window.print()`) because a visitor's
+own browser's margin/scale defaults produced bad output for real content
+— see `docs/DECISIONS.md` 2026-09-22 for the full tradeoff, including why
+this still fits the platform's free-tier-only constraint (R2 caching,
+`store.ts`'s `getCachedPdf`/`putCachedPdf`, keyed to the deck's own
+`updated_at` — a render happens once per edit, not once per download,
+which matters given Browser Rendering's tight free-tier minutes).
+
+A `'bento'` deck gets a real paginated PDF (one slide = one page, sized to
+the deck's own aspect): Puppeteer navigates to the deck's own live
+`/d/:id` URL and calls `window.bento.preparePdf()` — both editor and
+player mode expose it (`slides/src/pdfexport.ts`'s `buildPrintBox`, split
+out of the original `exportDeckPdf` so a server render can build the
+identical print box without also popping a local print dialog) — then
+reads the result via `page.pdf({preferCSSPageSize:true})`. An `'html'`
+deck's raw bytes go straight into `page.setContent()`, bypassing
+`htmlDeckWrapper`'s sandboxed iframe entirely (a fresh, throwaway browser
+context has no ambient session for that sandbox's threat model to
+protect), for a single seamless page sized to the measured content box.
+
+Both the editor topbar button and the player card check
+`kernel/src/save.ts`'s `hostPdfUrl()` — a new host-capability reader
+mirroring the existing `hostCan()`/`window.__bentoHost` pattern (used
+elsewhere for e.g. the file-system-access picker polyfill), but without
+`hostCan`'s unrelated `showSaveFilePicker` gate. The platform announces
+`window.__bentoHost = {ops:['pdf-download'], pdfUrl:'/d/:id/pdf'}` right
+after `<head>` on every live `/d/:id` view (never on `/d/:id/download` — a
+portable file must not point at a URL relative to one deployment); with no
+such host — a standalone opened file, bento.page — both buttons fall back
+to the original v1 local print path, unchanged and still fully offline.
 
 ## Sidebar: pinning, resizing, and a real preview panel
 
@@ -564,14 +586,22 @@ Worker does not exist.")
   `wrangler.toml`).
 
 You do **not** need to separately visit **Settings → Bindings** and add
-anything — `wrangler.toml`'s `[[r2_buckets]]`/`[[d1_databases]]` blocks are
-what create those bindings on deploy. That page will show them once the
-first build succeeds; it's normal for it to look empty before that.
+anything — `wrangler.toml`'s `[[r2_buckets]]`/`[[d1_databases]]`/`[browser]`
+blocks are what create those bindings on deploy. That page will show them
+once the first build succeeds; it's normal for it to look empty before
+that. The `[browser]` binding (Cloudflare Browser Rendering, used by
+Download PDF's server-side render — see the "Download PDF" section above)
+is a first-class Workers binding like R2/D1, with its own free-tier
+allocation (`developers.cloudflare.com/browser-run/limits/`) — no separate
+API token or product-activation step is expected. If the first PDF
+download 500s in a way that looks like the binding itself is missing,
+check the Worker's **Settings → Bindings** page for a `BROWSER` entry
+before assuming the code is at fault.
 
-**Binding names are load-bearing** — the code reads `env.DOCS` / `env.DB`
-verbatim (`platform/worker/src/env.ts`); they must match `wrangler.toml`'s
-`binding = "..."` values exactly (they already do, in the committed file —
-just don't rename `DOCS`/`DB` while editing).
+**Binding names are load-bearing** — the code reads `env.DOCS` / `env.DB` /
+`env.BROWSER` verbatim (`platform/worker/src/env.ts`); they must match
+`wrangler.toml`'s `binding = "..."` values exactly (they already do, in the
+committed file — just don't rename `DOCS`/`DB`/`BROWSER` while editing).
 
 ### 4. Verify
 

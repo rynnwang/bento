@@ -31,3 +31,12 @@ bucket_name = "bento-platform"
 binding = "DB"
 database_name = "bento-platform"
 database_id = "9408e034-8812-402a-ac21-42bd78f9f24f"
+
+# Browser Rendering (env.ts's BROWSER, driven via @cloudflare/puppeteer in
+# pdf.ts) — a real, Cloudflare-managed headless Chromium for the server-side
+# "Download PDF" feature. Free-tier limited: see env.ts's BROWSER doc comment.
+# compatibility_date above is already >= 2026-08-04, so nodejs_compat (which
+# @cloudflare/puppeteer needs) is on by default — no compatibility_flags line
+# needed here (see docs/DECISIONS.md).
+[browser]
+binding = "BROWSER"

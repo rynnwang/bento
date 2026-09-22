@@ -34,16 +34,20 @@ function makeR2() {
   return {
     async put(key, value, opts) {
       const bytes = typeof value === 'string' ? new TextEncoder().encode(value) : value
-      objects.set(key, { bytes: new Uint8Array(bytes), httpMetadata: opts?.httpMetadata })
+      objects.set(key, { bytes: new Uint8Array(bytes), httpMetadata: opts?.httpMetadata, customMetadata: opts?.customMetadata })
     },
     async get(key) {
       const obj = objects.get(key)
       if (!obj) return null
       return {
         httpMetadata: obj.httpMetadata,
+        customMetadata: obj.customMetadata,
         body: obj.bytes,
         async text() {
           return new TextDecoder().decode(obj.bytes)
+        },
+        async arrayBuffer() {
+          return obj.bytes.buffer.slice(obj.bytes.byteOffset, obj.bytes.byteOffset + obj.bytes.byteLength)
         },
       }
     },
@@ -478,10 +482,83 @@ await check('GET /d/:id serves a spliced .bento.html containing the doc and no l
   assert(text.match(/id="bento-doc"/g)?.length === 1, 'expected exactly one #bento-doc block')
 })
 
+await check('GET /d/:id announces server-side PDF rendering to the booting app (window.__bentoHost), right after <head>', async () => {
+  const res = await worker.fetch(new Request(`https://platform.example/d/${deckId}`), env)
+  const { text } = await readBody(res)
+  assert(res.status === 200, `expected 200, got ${res.status}`)
+  assert(text.includes(`window.__bentoHost={ops:["pdf-download"],pdfUrl:"/d/${deckId}/pdf"}`), 'expected the host announcement pointing at this deck\'s /pdf URL')
+  assert(text.indexOf('__bentoHost') < text.indexOf('id="bento-doc"'), 'the announcement must run before the app bundle, not after')
+})
+
+let pdfCacheDeckId
+await check('GET /d/:id/pdf serves a cached render directly, without touching Browser Rendering at all', async () => {
+  const createRes = await worker.fetch(
+    new Request('https://platform.example/api/decks', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: ownerCookie },
+      body: JSON.stringify({ doc: { ...exampleDoc, title: 'PDF cache test deck' } }),
+    }),
+    env,
+  )
+  pdfCacheDeckId = (await readBody(createRes)).data.id
+
+  // env.BROWSER is deliberately absent from this test harness (Browser
+  // Rendering can't be simulated locally) — so a CACHE MISS here would throw,
+  // not just render wrong. Seeding R2's cache entry directly and asserting
+  // a clean 200 is what proves the cache-hit path short-circuits before ever
+  // reaching pdf.ts's puppeteer.launch(env.BROWSER).
+  const listRes = await worker.fetch(new Request('https://platform.example/api/decks', { headers: { cookie: ownerCookie } }), env)
+  const { data: listData } = await readBody(listRes)
+  const meta = listData.decks.find((d) => d.id === pdfCacheDeckId)
+  assert(meta, 'expected the deck to be listed')
+  const fakePdfBytes = new TextEncoder().encode('%PDF-1.7 fake cached bytes')
+  env.DOCS._objects.set(`pdf/${pdfCacheDeckId}.pdf`, {
+    bytes: fakePdfBytes,
+    httpMetadata: { contentType: 'application/pdf' },
+    customMetadata: { updatedAt: String(meta.updatedAt) },
+  })
+  const res = await worker.fetch(new Request(`https://platform.example/d/${pdfCacheDeckId}/pdf`), env)
+  const { text } = await readBody(res)
+  assert(res.status === 200, `expected 200, got ${res.status}: ${text}`)
+  assert(res.headers.get('content-type') === 'application/pdf', 'expected an application/pdf content-type')
+  assert(res.headers.get('content-disposition')?.includes('attachment'), 'expected an attachment disposition')
+  assert(text === '%PDF-1.7 fake cached bytes', 'expected the exact cached bytes back, not a fresh render')
+})
+
+await check('GET /d/:id/pdf re-renders once the deck changes (a stale cache entry, by updated_at, must not be served)', async () => {
+  // Uses its OWN dedicated deck (pdfCacheDeckId), not the shared `deckId`
+  // fixture other tests assert a specific title against — this test's
+  // whole point is to mutate a deck's title, which must not leak into
+  // unrelated tests. The cache entry seeded above is now stale; this
+  // SHOULD fall through to a fresh render attempt, which this harness can't
+  // complete (no real env.BROWSER — see pdf.ts), and index.ts's own
+  // top-level try/catch turns that into a 500, not a thrown error. That 500
+  // IS the assertion: it proves staleness was correctly detected (the
+  // alternative failure mode — silently serving the old cached bytes —
+  // would show up as a clean 200 with the STALE content instead).
+  const res = await worker.fetch(
+    new Request(`https://platform.example/api/decks/${pdfCacheDeckId}/title`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', cookie: ownerCookie },
+      body: JSON.stringify({ title: 'Retitled to invalidate the PDF cache' }),
+    }),
+    env,
+  )
+  assert(res.status === 200, `expected 200, got ${res.status}`)
+  const pdfRes = await worker.fetch(new Request(`https://platform.example/d/${pdfCacheDeckId}/pdf`), env)
+  assert(pdfRes.status === 500, `expected the stale cache to be rejected and fall through to a (failing, in this harness) render attempt — got ${pdfRes.status}`)
+})
+
 await check('GET /d/:id/download sets a Content-Disposition attachment header', async () => {
   const res = await worker.fetch(new Request(`https://platform.example/d/${deckId}/download`), env)
   assert(res.status === 200, `expected 200, got ${res.status}`)
   assert(res.headers.get('content-disposition')?.includes('attachment'), 'missing attachment disposition')
+})
+
+await check('GET /d/:id/download does NOT carry the __bentoHost announcement — a portable file must not point at a URL relative to this deployment', async () => {
+  const res = await worker.fetch(new Request(`https://platform.example/d/${deckId}/download`), env)
+  const { text } = await readBody(res)
+  assert(!text.includes('__bentoHost'), 'a downloaded standalone file should not announce a platform-specific host capability')
 })
 
 await check('GET /d/:id for an unknown id is 404', async () => {
@@ -665,6 +742,11 @@ await check('GET /d/:id for a private deck is 404 for an anonymous viewer', asyn
 
 await check('GET /d/:id/download for a private deck is 404 for an anonymous viewer', async () => {
   const res = await worker.fetch(new Request(`https://platform.example/d/${privateDeckId}/download`), env)
+  assert(res.status === 404, `expected 404, got ${res.status}`)
+})
+
+await check('GET /d/:id/pdf for a private deck is 404 for an anonymous viewer (same gate as the live view, before any render is attempted)', async () => {
+  const res = await worker.fetch(new Request(`https://platform.example/d/${privateDeckId}/pdf`), env)
   assert(res.status === 404, `expected 404, got ${res.status}`)
 })
 
@@ -968,16 +1050,15 @@ await check('GET /d/:id for an html deck serves a sandboxed iframe wrapper, not 
   assert(!/<body>[\s\S]*<script>alert\(1\)<\/script>/.test(text.replace(/srcdoc="[^"]*"/, '')), 'script must not appear as live markup outside the sandboxed srcdoc')
 })
 
-await check('GET /d/:id for an html deck includes a client-side Download PDF control, outside the sandboxed iframe', async () => {
+await check('GET /d/:id for an html deck includes a Download PDF link to the server-rendered endpoint, outside the sandboxed iframe', async () => {
   const res = await worker.fetch(new Request(`https://platform.example/d/${htmlDeckId}`), env)
   const { text } = await readBody(res)
   assert(res.status === 200, `expected 200, got ${res.status}`)
-  // The button and its trigger script must live in the WRAPPER, not be
-  // something the untrusted deck itself could forge — so they must appear
-  // outside the srcdoc attribute value.
+  // The link must live in the WRAPPER, not be something the untrusted deck
+  // itself could forge — so it must appear outside the srcdoc attribute.
   const outsideSrcdoc = text.replace(/srcdoc="[^"]*"/, '')
-  assert(outsideSrcdoc.includes('id="bento-pdf-btn"'), 'expected a Download PDF button in the wrapper')
-  assert(outsideSrcdoc.includes('.print()'), 'expected the wrapper script to trigger the browser print pipeline')
+  assert(outsideSrcdoc.includes('id="bento-pdf-btn"'), 'expected a Download PDF control in the wrapper')
+  assert(outsideSrcdoc.includes(`href="/d/${htmlDeckId}/pdf"`), 'expected it to link to the server-rendered PDF endpoint, not trigger local print')
 })
 
 await check('GET /d/:id/download for an html deck serves the raw file, not the wrapper', async () => {
@@ -1348,6 +1429,14 @@ await check('GET /d/:id still serves the OWNER the real deck regardless of the p
   const { text } = await readBody(res)
   assert(res.status === 200, `expected 200, got ${res.status}`)
   assert(!text.includes('Password required'), "the owner's own session must bypass the password gate")
+})
+
+await check('GET /d/:id/pdf shows the password gate too, redirecting post-unlock to /pdf (not the live view)', async () => {
+  const res = await worker.fetch(new Request(`https://platform.example/d/${pwDeckId}/pdf`), env)
+  const { text } = await readBody(res)
+  assert(res.status === 200, `expected 200, got ${res.status}`)
+  assert(text.includes('Password required'), 'expected the password gate page')
+  assert(text.includes(`/d/${pwDeckId}/pdf`), 'expected the gate to redirect back to the /pdf URL after unlock, not /d/:id')
 })
 
 await check('GET /a/:id/:key 401s for an anonymous viewer of a password-protected deck', async () => {

@@ -10,6 +10,12 @@
 //                                    deferred, see platform/README.md)
 //   assets/<deckId>/<sha256>.<ext>  uploaded images, content-addressed
 //                                    within the deck's own namespace
+//   pdf/<deckId>.pdf                cached server-rendered PDF (see pdf.ts) —
+//                                    ONE object per deck, self-describing its
+//                                    own freshness via customMetadata.updatedAt
+//                                    rather than a content hash in the key, so
+//                                    there's never an orphaned stale copy to
+//                                    separately clean up
 //
 // D1 table `decks` — see platform/worker/migrations/0001_init.sql for DDL
 // comments. Mutation used to be gated by a per-deck capability token
@@ -417,4 +423,27 @@ export async function getAsset(env: Env, deckId: string, key: string): Promise<R
   // Path segments only — no `..`, no slashes smuggled through the URL param.
   if (!/^[a-f0-9]+\.[a-z0-9]+$/i.test(key)) return null
   return env.DOCS.get(`assets/${deckId}/${key}`)
+}
+
+function deckPdfKey(id: string): string {
+  return `pdf/${id}.pdf`
+}
+
+/** Returns the cached PDF only if it was rendered from the deck's CURRENT
+ *  `updated_at` — otherwise null, so the caller re-renders. Free-tier
+ *  Browser Rendering minutes are scarce and this endpoint is reachable by
+ *  any viewer with access, not just the owner, so a cache miss should be
+ *  rare in practice (one render per edit, not one per download). */
+export async function getCachedPdf(env: Env, id: string, updatedAt: number): Promise<ArrayBuffer | null> {
+  const obj = await env.DOCS.get(deckPdfKey(id))
+  if (!obj) return null
+  if (obj.customMetadata?.updatedAt !== String(updatedAt)) return null
+  return obj.arrayBuffer()
+}
+
+export async function putCachedPdf(env: Env, id: string, updatedAt: number, bytes: ArrayBuffer): Promise<void> {
+  await env.DOCS.put(deckPdfKey(id), bytes, {
+    httpMetadata: { contentType: 'application/pdf' },
+    customMetadata: { updatedAt: String(updatedAt) },
+  })
 }

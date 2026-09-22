@@ -583,6 +583,23 @@ export const hostCan = (op: string): boolean => {
     && typeof (window as any).showSaveFilePicker === 'function'
 }
 
+/**
+ * A host that can render a real, server-side PDF for the deck CURRENTLY
+ * being viewed announces a `pdfUrl` alongside the `'pdf-download'` op — e.g.
+ * the Bento platform Worker, after its client-side print-to-PDF (the
+ * visitor's own browser print dialog, with its own margin/scale defaults)
+ * turned out unreliable for real content's pagination. Unlike `hostCan`,
+ * this does NOT gate on `showSaveFilePicker` — that condition is specific to
+ * the file-picker polyfill contract, not this one. Returns null when no such
+ * host is present (a standalone opened file, bento.page, any host that
+ * hasn't announced this op), so callers fall back to local print.
+ */
+export function hostPdfUrl(): string | null {
+  const host = (window as any).__bentoHost
+  if (!host || !Array.isArray(host.ops) || !host.ops.includes('pdf-download')) return null
+  return typeof host.pdfUrl === 'string' ? host.pdfUrl : null
+}
+
 async function pickHandle(
   doc: KernelDoc, suffix = '', suggestedName?: string, purpose: SavePurpose = 'in-place',
 ): Promise<FsFileHandle | null> {
