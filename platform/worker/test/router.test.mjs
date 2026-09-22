@@ -490,6 +490,11 @@ await check('GET /d/:id announces server-side PDF rendering to the booting app (
   assert(text.indexOf('__bentoHost') < text.indexOf('id="bento-doc"'), 'the announcement must run before the app bundle, not after')
 })
 
+// Must match pdf.ts's PDF_RENDER_VERSION — the test can't import it directly
+// (only the bundled worker's default {fetch} export is reachable here), so
+// this is re-declared, same as the `pdf/<id>.pdf` key shape a few lines down.
+const CURRENT_PDF_RENDER_VERSION = '2'
+
 let pdfCacheDeckId
 await check('GET /d/:id/pdf serves a cached render directly, without touching Browser Rendering at all', async () => {
   const createRes = await worker.fetch(
@@ -515,7 +520,7 @@ await check('GET /d/:id/pdf serves a cached render directly, without touching Br
   env.DOCS._objects.set(`pdf/${pdfCacheDeckId}.pdf`, {
     bytes: fakePdfBytes,
     httpMetadata: { contentType: 'application/pdf' },
-    customMetadata: { updatedAt: String(meta.updatedAt) },
+    customMetadata: { updatedAt: String(meta.updatedAt), renderVersion: CURRENT_PDF_RENDER_VERSION },
   })
   const res = await worker.fetch(new Request(`https://platform.example/d/${pdfCacheDeckId}/pdf`), env)
   const { text } = await readBody(res)
@@ -523,6 +528,25 @@ await check('GET /d/:id/pdf serves a cached render directly, without touching Br
   assert(res.headers.get('content-type') === 'application/pdf', 'expected an application/pdf content-type')
   assert(res.headers.get('content-disposition')?.includes('attachment'), 'expected an attachment disposition')
   assert(text === '%PDF-1.7 fake cached bytes', 'expected the exact cached bytes back, not a fresh render')
+})
+
+await check('GET /d/:id/pdf ignores a cache entry from an OLDER render version, even with a matching updated_at', async () => {
+  // Simulates exactly the bug this version bump exists to prevent: a
+  // rendering-logic fix ships, but the deck's own content (and so its
+  // updated_at) never changed — without also checking renderVersion, the
+  // cache would keep serving bytes produced by the OLD, now-wrong logic
+  // forever. A stale-version entry must be rejected exactly like a
+  // stale-updated_at one — see the test right after this.
+  const listRes = await worker.fetch(new Request('https://platform.example/api/decks', { headers: { cookie: ownerCookie } }), env)
+  const { data: listData } = await readBody(listRes)
+  const meta = listData.decks.find((d) => d.id === pdfCacheDeckId)
+  env.DOCS._objects.set(`pdf/${pdfCacheDeckId}.pdf`, {
+    bytes: new TextEncoder().encode('%PDF-1.7 stale-version bytes from an old renderer'),
+    httpMetadata: { contentType: 'application/pdf' },
+    customMetadata: { updatedAt: String(meta.updatedAt), renderVersion: '1' }, // deliberately not CURRENT_PDF_RENDER_VERSION
+  })
+  const res = await worker.fetch(new Request(`https://platform.example/d/${pdfCacheDeckId}/pdf`), env)
+  assert(res.status === 500, `expected the version-stale cache to be rejected and fall through to a (failing, in this harness) render attempt — got ${res.status}`)
 })
 
 await check('GET /d/:id/pdf re-renders once the deck changes (a stale cache entry, by updated_at, must not be served)', async () => {

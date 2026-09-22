@@ -13,9 +13,9 @@
 //   pdf/<deckId>.pdf                cached server-rendered PDF (see pdf.ts) —
 //                                    ONE object per deck, self-describing its
 //                                    own freshness via customMetadata.updatedAt
-//                                    rather than a content hash in the key, so
-//                                    there's never an orphaned stale copy to
-//                                    separately clean up
+//                                    AND .renderVersion rather than a content
+//                                    hash in the key, so there's never an
+//                                    orphaned stale copy to separately clean up
 //
 // D1 table `decks` — see platform/worker/migrations/0001_init.sql for DDL
 // comments. Mutation used to be gated by a per-deck capability token
@@ -430,20 +430,26 @@ function deckPdfKey(id: string): string {
 }
 
 /** Returns the cached PDF only if it was rendered from the deck's CURRENT
- *  `updated_at` — otherwise null, so the caller re-renders. Free-tier
- *  Browser Rendering minutes are scarce and this endpoint is reachable by
- *  any viewer with access, not just the owner, so a cache miss should be
- *  rare in practice (one render per edit, not one per download). */
-export async function getCachedPdf(env: Env, id: string, updatedAt: number): Promise<ArrayBuffer | null> {
+ *  `updated_at` AND by the CURRENT `renderVersion` (pdf.ts's
+ *  PDF_RENDER_VERSION) — otherwise null, so the caller re-renders. The
+ *  version check exists so a fix to the rendering logic itself (not the
+ *  deck's content) can't keep serving old, now-wrong bytes out of the
+ *  cache just because `updated_at` never changed — see pdf.ts's
+ *  PDF_RENDER_VERSION doc comment. Free-tier Browser Rendering minutes are
+ *  scarce and this endpoint is reachable by any viewer with access, not
+ *  just the owner, so a cache miss should be rare in practice otherwise
+ *  (one render per edit, not one per download). */
+export async function getCachedPdf(env: Env, id: string, updatedAt: number, renderVersion: number): Promise<ArrayBuffer | null> {
   const obj = await env.DOCS.get(deckPdfKey(id))
   if (!obj) return null
   if (obj.customMetadata?.updatedAt !== String(updatedAt)) return null
+  if (obj.customMetadata?.renderVersion !== String(renderVersion)) return null
   return obj.arrayBuffer()
 }
 
-export async function putCachedPdf(env: Env, id: string, updatedAt: number, bytes: ArrayBuffer): Promise<void> {
+export async function putCachedPdf(env: Env, id: string, updatedAt: number, renderVersion: number, bytes: ArrayBuffer): Promise<void> {
   await env.DOCS.put(deckPdfKey(id), bytes, {
     httpMetadata: { contentType: 'application/pdf' },
-    customMetadata: { updatedAt: String(updatedAt) },
+    customMetadata: { updatedAt: String(updatedAt), renderVersion: String(renderVersion) },
   })
 }

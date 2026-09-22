@@ -22,7 +22,16 @@ import puppeteer from '@cloudflare/puppeteer'
 import type { Env } from './env.ts'
 
 const VIEWPORT_WIDTH = 1280 // matches slides/'s own 16:9 default deck width
-const PDF_MAX_DIM = 20000 // px — a sane ceiling on a measured content box
+
+/** Bump whenever renderBentoDeckPdf/renderHtmlDeckPdf's actual OUTPUT
+ *  changes — folded into the R2 cache key (store.ts's getCachedPdf/
+ *  putCachedPdf) alongside the deck's own `updated_at`, so a rendering fix
+ *  can never keep serving bytes produced by the OLD, now-wrong logic just
+ *  because the deck itself hasn't changed. See docs/DECISIONS.md 2026-09-23:
+ *  v1 forced a single giant seamless page for every 'html' deck, which
+ *  ignored a deck's own hand-authored `@media print` CSS and produced an
+ *  unreadable result for ordinary multi-section reports. */
+export const PDF_RENDER_VERSION = 2
 
 /** Render an already-live 'bento' deck (navigated to its own `/d/:id` — the
  *  URL a real viewer would open, so editor-vs-player mode and access level
@@ -47,10 +56,21 @@ export async function renderBentoDeckPdf(env: Env, viewUrl: string): Promise<Buf
   }
 }
 
-/** Render an 'html' deck's raw bytes to ONE seamless page sized to its own
- *  measured content box — no page breaks to fight arbitrary (or entirely
- *  absent) print CSS an 'html' deck was never authored with pagination in
- *  mind. Feeds the raw bytes directly via `page.setContent`, bypassing the
+/** Render an 'html' deck's raw bytes to a normal, STANDARD-PAGINATED PDF —
+ *  the same shape any "Print to PDF" of an ordinary web page produces:
+ *  A4-ish pages, Chromium's own default margins, breaking wherever the
+ *  content naturally falls. `preferCSSPageSize: true` lets the deck's OWN
+ *  `@page`/`@media print` rules win when it has them — many AI-generated
+ *  reports do (this one's own print stylesheet hides its sidebar nav,
+ *  resets to a single column, and marks tables/figures `break-inside:
+ *  avoid`), and throwing that away in favor of a "clever" single endless
+ *  page was the exact v1 mistake this superseded (docs/DECISIONS.md
+ *  2026-09-23): mechanically seamless, but no reasonable PDF viewer shows a
+ *  page several thousand points tall at a readable zoom, so a real
+ *  multi-section document came out unreadable. A deck with NO print CSS at
+ *  all just gets Chromium's ordinary default pagination — the same
+ *  reasonable fallback "Ctrl+P → Save as PDF" already gives on any page.
+ *  Feeds the raw bytes directly via `page.setContent`, bypassing the
  *  sandboxed-iframe wrapper (`htmlDeckWrapper`) entirely — this headless
  *  browser instance has no ambient session or cookies to protect (a fresh,
  *  throwaway context per render), so the cross-origin-cookie-theft threat
@@ -64,19 +84,7 @@ export async function renderHtmlDeckPdf(env: Env, rawHtml: string): Promise<Buff
     const page = await browser.newPage()
     await page.setViewport({ width: VIEWPORT_WIDTH, height: 800 })
     await page.setContent(rawHtml, { waitUntil: 'networkidle0' })
-    // A string, not a typed callback: the callback runs in the PAGE's own
-    // DOM realm, not this Worker's (which has no `dom` lib — Workers and DOM
-    // globals conflict, e.g. both declare `fetch`/`Response` differently —
-    // so tsc can't typecheck a function body meant for the other side).
-    const height = (await page.evaluate(
-      `Math.min(Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0), ${PDF_MAX_DIM})`,
-    )) as number
-    return await page.pdf({
-      width: `${VIEWPORT_WIDTH}px`,
-      height: `${height}px`,
-      printBackground: true,
-      margin: { top: '0px', bottom: '0px', left: '0px', right: '0px' },
-    })
+    return await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true })
   } finally {
     await browser.close()
   }
