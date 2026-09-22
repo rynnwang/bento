@@ -14,6 +14,71 @@ Decision. Why. Pointers.
 
 ---
 
+## 2026-09-22 — Download PDF switches to server-side rendering (Cloudflare Browser Rendering), superseding the 2026-09-21 client-side-print decision
+
+**Decision.** Download PDF now renders server-side via Cloudflare Browser
+Rendering (`@cloudflare/puppeteer`, `platform/worker/src/pdf.ts`, the
+`BROWSER` binding in `wrangler.toml`/`env.ts`) instead of the visitor's own
+browser print dialog. A new `GET /d/:id/pdf` route (`handlePdf` in
+`index.ts`) does the rendering and returns a real `application/pdf` file
+directly — no print dialog, no client-side DOM measuring.
+
+- `'bento'` decks: Puppeteer navigates to the deck's own live `/d/:id` URL
+  (whatever a real viewer would see — editor or player mode, per `access`),
+  calls the `window.bento.preparePdf()` hook (both modes now expose it —
+  `slides/src/pdfexport.ts`'s `buildPrintBox`, split out of `exportDeckPdf`
+  specifically for this) to build the SAME `#bento-print` box the local
+  print path builds, then reads it via `page.pdf({preferCSSPageSize:true})`
+  instead of `window.print()`.
+- `'html'` decks: raw bytes go straight into `page.setContent()` (bypassing
+  the sandboxed-iframe wrapper entirely — a fresh, throwaway browser context
+  has no ambient session to protect, so the sandbox's threat model doesn't
+  apply here), then a single seamless page sized to the measured content box,
+  same idea as the v1 client-side seamless page, just executed by a
+  controlled Chromium instead of the visitor's own browser.
+- Both the editor topbar button and the read-only player card now check a
+  new `kernel/src/save.ts` host-capability reader, `hostPdfUrl()` (mirrors
+  the existing `hostCan()`/`__bentoHost` pattern, but deliberately does NOT
+  gate on `showSaveFilePicker` the way `hostCan` does — that condition is
+  specific to the file-picker polyfill contract, not this one). The
+  platform announces `window.__bentoHost = {ops:['pdf-download'],
+  pdfUrl:'/d/:id/pdf'}` via a tiny inline script spliced in right after
+  `<head>` on every live `/d/:id` view (never on `/d/:id/download` — a
+  portable file must not point at a URL relative to one deployment). When
+  no host announces this (a standalone opened file, bento.page, any future
+  host that hasn't wired it up), both buttons fall back to the original
+  local `exportDeckPdf()` print path unchanged — it still exists and still
+  works offline.
+
+**Why.** The 2026-09-21 client-side approach worked mechanically but the
+visitor's own browser print dialog's margin/scale defaults produced
+genuinely bad output for real content (screenshot evidence: an 'html' deck
+with a diagram and tables paginated into two cramped, badly-scaled pages
+instead of the intended clean result). A server-controlled Chromium
+instance removes that variable entirely — the platform, not the visitor's
+browser/OS, controls page size and margins.
+
+**Tradeoff accepted.** Browser Rendering's free tier is tight (10
+browser-minutes/day, 3 concurrent browsers, 60s/session as of writing —
+developers.cloudflare.com/browser-run/limits/) and `/d/:id/pdf` is
+reachable by any viewer with access to a deck, not just the owner — a
+render-on-demand endpoint with no cache would be a real risk of exhausting
+that budget from ordinary repeat traffic alone. Mitigated with R2 caching
+(`store.ts`'s `getCachedPdf`/`putCachedPdf`, one object per deck at
+`pdf/<id>.pdf`, self-describing its own freshness via `customMetadata.
+updatedAt` rather than a content hash in the key) — a render only happens
+once per edit, not once per download. If usage ever outgrows the free tier
+despite caching, the lever is upgrading to a Workers Paid plan, not
+reverting this decision.
+
+**Pointers.** `platform/worker/src/pdf.ts`, `index.ts`'s `handlePdf`,
+`store.ts`'s PDF cache functions, `env.ts`'s `BROWSER` binding,
+`wrangler.toml`, `slides/src/pdfexport.ts`'s `buildPrintBox`,
+`kernel/src/save.ts`'s `hostPdfUrl`, `CLAUDE.md`'s "Download PDF" bullet,
+`platform/README.md`.
+
+---
+
 ## 2026-09-21 — Download PDF ships as client-side browser print, not server-side rendering
 
 **Decision.** The platform's new one-click "Download PDF" (reachable by any

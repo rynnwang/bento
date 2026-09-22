@@ -12,9 +12,9 @@
 // at anything about what it's protecting.
 import { PAGE_STYLES } from './pageStyles.ts'
 
-export function renderDeckPasswordGate(id: string, download: boolean): string {
+export function renderDeckPasswordGate(id: string, target: 'view' | 'download' | 'pdf' = 'view'): string {
   const unlockUrl = `/api/decks/${id}/unlock`
-  const targetUrl = download ? `/d/${id}/download` : `/d/${id}`
+  const targetUrl = target === 'download' ? `/d/${id}/download` : target === 'pdf' ? `/d/${id}/pdf` : `/d/${id}`
   return `<!DOCTYPE html>
 <html lang="en">
 <head>

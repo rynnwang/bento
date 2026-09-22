@@ -11,7 +11,7 @@ import { startNetGuard } from '../../kernel/src/net.ts'
 import {
   capturePristine, readEmbeddedDoc, serializeFile, serializeAuto, downloadFile,
   suggestedFileName, parseEnvelope, decryptEnvelope, setEncryptionPassword,
-  registerPreview, canWriteInPlace, hostCan,
+  registerPreview, canWriteInPlace, hostCan, hostPdfUrl,
 } from './save'
 import { maybeShowReturnGate } from './editor/returngate'
 import { buildSlidePreview } from './preview'
@@ -28,7 +28,7 @@ import { Editor } from './editor/editor'
 import { startPresentation } from './present'
 import { SyncSession } from './sync/session'
 import { onlineTransport, startSharing, stopSharing } from './sync/online'
-import { exportDeckPdf } from './pdfexport.ts'
+import { exportDeckPdf, buildPrintBox } from './pdfexport.ts'
 
 // Tell the kernel who this app is — must precede any kernel module use
 // (window title suffix, save-picker label, update manifest + its `app` check).
@@ -146,6 +146,13 @@ function playerMode(doc: BentoDoc) {
   document.title = `${doc.title} — ${appConfig().appName}`
   if (doc.fonts?.length) injectFonts(doc)
   document.getElementById('bento-splash')?.remove()
+  // A host that can render a real PDF server-side (the platform Worker)
+  // gets a direct download instead of the local browser's own print
+  // dialog, whose margin/scale defaults are the visitor's, not ours — the
+  // label stays the same either way (still "get a PDF"), just the
+  // mechanism behind the click differs, so this needs no new translated
+  // string.
+  const pdfUrl = hostPdfUrl()
   const card = document.createElement('div')
   card.className = 'ed-player'
   card.innerHTML =
@@ -162,14 +169,24 @@ function playerMode(doc: BentoDoc) {
     })
   }
   card.querySelector('.ed-playgo')!.addEventListener('click', start)
-  // Shares the exact page-building logic the full editor's topbar PDF button
-  // uses (pdfexport.ts) — a view-access link gets the same one-slide-per-page
-  // export without ever booting the editor.
-  card.querySelector('.ed-playpdf')!.addEventListener('click', () => exportDeckPdf(doc))
+  card.querySelector('.ed-playpdf')!.addEventListener('click', () => {
+    if (pdfUrl) window.location.href = pdfUrl
+    else exportDeckPdf(doc)
+  })
   card.querySelector('.ed-playcopy')!.addEventListener('click', () => {
     void serializeAuto(doc).then((html) => downloadFile(html, suggestedFileName(doc)))
   })
-  ;(window as any).bento = { format: doc.format, doc, readonly: true }
+  ;(window as any).bento = {
+    format: doc.format,
+    doc,
+    readonly: true,
+    // Server-side PDF rendering (platform/worker/src/pdf.ts) drives a
+    // headless Chromium to this same URL, then calls this to build the
+    // EXACT #bento-print box exportDeckPdf() would print locally — but
+    // hands it to page.pdf({preferCSSPageSize:true}) instead of a visitor's
+    // own browser dialog, for consistent, correctly-paginated output.
+    preparePdf: () => buildPrintBox(doc),
+  }
   start()
 }
 
@@ -230,6 +247,12 @@ if (location.hash === '#present') {
   get selection() {
     return store.selection.slice()
   },
+  /** Builds the SAME print-ready `#bento-print` box the topbar PDF button
+   *  does, without also calling window.print() — the platform's server-side
+   *  PDF render (platform/worker/src/pdf.ts) navigates a headless Chromium
+   *  here, calls this, then captures the result via page.pdf() instead of a
+   *  visitor's own browser dialog. */
+  preparePdf: () => buildPrintBox(store.doc),
   /** animation engine, exposed for scripting/diagnostics */
   anim,
   /** i18n: t/locale/setLocale/choices — setLocale('x-pseudo') audits the sweep */

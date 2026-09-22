@@ -34,6 +34,9 @@
 //                               A share-password-protected deck shows a password gate instead
 //                               (sharePage.ts) until the request carries a valid unlock cookie.
 //   GET  /d/:id/download        same content, as a downloadable attachment (raw bytes for 'html')
+//   GET  /d/:id/pdf             a real, server-rendered PDF (pdf.ts, Cloudflare Browser
+//                               Rendering) — cached in R2 keyed to the deck's updated_at,
+//                               see handlePdf. Same access/password gating as GET /d/:id.
 //   GET  /a/:id/:key            an uploaded asset's bytes
 //   GET  /favicon.png           the platform's own site icon (favicon.ts) — public, immutable-cached
 //
@@ -110,6 +113,8 @@ import {
   deleteDeck,
   putAsset,
   getAsset,
+  getCachedPdf,
+  putCachedPdf,
   listDecks,
   searchDecks,
   createProject,
@@ -124,6 +129,7 @@ import {
 import { renderDemoPage } from './demo.ts'
 import { renderSetupPage, renderLoginPage } from './authPages.ts'
 import { renderDeckPasswordGate } from './sharePage.ts'
+import { renderBentoDeckPdf, renderHtmlDeckPdf } from './pdf.ts'
 import { faviconResponse } from './favicon.ts'
 import { parseOutline } from './compile/schema.ts'
 import { compileOutline } from './compile/compile.ts'
@@ -215,22 +221,19 @@ function extractHtmlTitle(rawHtml: string): string {
  *  (not the same escaping as element content — `<`/`>` are fine here,
  *  `"` is not).
  *
- *  **Download PDF (v1)**: a small button in THIS wrapper (never inside the
+ *  **Download PDF (v2)**: a plain link in THIS wrapper (never inside the
  *  sandboxed iframe — an untrusted deck's own script must never be able to
- *  fake the control) triggers the browser's own print-to-PDF, entirely
- *  client-side — no server rendering, no third-party service, no Cloudflare
- *  product to meter or pay for, so it costs nothing beyond what's already
- *  free. `allow-same-origin` (above) is what makes this possible at all:
- *  `iframe.contentDocument` would throw across an opaque origin. Unlike a
- *  `'bento'` deck (see pdfexport.ts's one-slide-per-page export, which knows
- *  the deck's real page model), an uploaded 'html' deck has no page concept
- *  Bento can rely on — it might be a report, a single long page, anything —
- *  so the one universal, safe default is a SEAMLESS single page sized to
- *  the deck's own measured content box, no page breaks to fight arbitrary
- *  print CSS (or the total absence of any) never written with pagination in
- *  mind. `PDF_MAX_DIM` just keeps a runaway measurement (an infinite-scroll
- *  deck, say) from asking the browser to rasterize something absurd. */
-function htmlDeckWrapper(rawHtml: string, title: string): string {
+ *  fake the control) to `/d/:id/pdf`, which server-renders a REAL PDF via
+ *  Cloudflare Browser Rendering (see pdf.ts) and returns it directly — no
+ *  print dialog, no client-side measuring. v1 tried the client-side route
+ *  (the iframe's own `window.print()`, `allow-same-origin` making
+ *  `iframe.contentDocument` reachable at all): it worked mechanically, but
+ *  real content — diagrams, tables, arbitrary print CSS an 'html' deck was
+ *  never authored with in mind — paginated badly through a VISITOR's own
+ *  browser print dialog, whose margin/scale defaults we don't control (see
+ *  docs/DECISIONS.md). A real, server-controlled Chromium instance gives a
+ *  deterministic result independent of the visitor's own browser/OS. */
+function htmlDeckWrapper(rawHtml: string, title: string, id: string): string {
   const srcdocEscaped = rawHtml.replace(/&/g, '&amp;').replace(/"/g, '&quot;')
   const titleEscaped = title.replace(/&/g, '&amp;').replace(/</g, '&lt;')
   return `<!DOCTYPE html>
@@ -240,46 +243,12 @@ html,body{margin:0;height:100%;background:#0D1B2E}
 iframe{border:0;width:100vw;height:100vh;display:block}
 #bento-pdf-btn{position:fixed;top:14px;right:14px;z-index:10;padding:8px 14px;border:1px solid rgb(255 255 255 / 0.25);
   border-radius:999px;background:rgb(13 27 46 / 0.55);backdrop-filter:blur(6px);color:#fff;font:13px/1 -apple-system,
-  BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;cursor:pointer}
+  BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;cursor:pointer;text-decoration:none;display:inline-block}
 #bento-pdf-btn:hover{background:rgb(13 27 46 / 0.8)}
 </style>
 </head><body>
 <iframe id="bento-html-frame" sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals" srcdoc="${srcdocEscaped}"></iframe>
-<button id="bento-pdf-btn" type="button">⬇ Download PDF</button>
-<script>
-(function () {
-  var PDF_MAX_DIM = 20000 // px — a sane ceiling on a measured content box
-  var btn = document.getElementById('bento-pdf-btn')
-  var frame = document.getElementById('bento-html-frame')
-  btn.addEventListener('click', function () {
-    var win, doc
-    try {
-      win = frame.contentWindow
-      doc = frame.contentDocument
-      if (!win || !doc) throw new Error('no same-origin access to the deck frame')
-      var root = doc.documentElement
-      var body = doc.body
-      var w = Math.min(frame.clientWidth || root.clientWidth, PDF_MAX_DIM)
-      var h = Math.min(Math.max(root.scrollHeight, body ? body.scrollHeight : 0, frame.clientHeight || 0), PDF_MAX_DIM)
-      var style = doc.createElement('style')
-      style.setAttribute('data-bento-pdf', '1')
-      style.textContent = '@page{size:' + w + 'px ' + h + 'px;margin:0}html,body{margin:0 !important}'
-      doc.head.appendChild(style)
-      var cleanup = function () {
-        style.remove()
-        win.removeEventListener('afterprint', cleanup)
-      }
-      win.addEventListener('afterprint', cleanup)
-      win.focus()
-      win.print()
-    } catch (e) {
-      // Cross-origin or otherwise inaccessible frame content — fall back to
-      // printing the page as the browser sees it rather than doing nothing.
-      window.print()
-    }
-  })
-})()
-<\/script>
+<a id="bento-pdf-btn" href="/d/${id}/pdf">⬇ Download PDF</a>
 </body></html>`
 }
 
@@ -738,7 +707,7 @@ async function handleView(req: Request, env: Env, id: string, download: boolean)
   // A share-password-protected deck shows the gate page INSTEAD OF content
   // for anyone but the owner, until they've unlocked it — see this file's
   // header and sharePage.ts. The real doc/html bytes are never sent here.
-  if (!owner && !(await isDeckUnlocked(req, meta))) return html(renderDeckPasswordGate(id, download))
+  if (!owner && !(await isDeckUnlocked(req, meta))) return html(renderDeckPasswordGate(id, download ? 'download' : 'view'))
 
   if (meta.kind === 'html') {
     const rawHtml = await getDeckHtml(env, id)
@@ -754,7 +723,7 @@ async function handleView(req: Request, env: Env, id: string, download: boolean)
     }
     // Always the sandboxed wrapper, even for the owner — see htmlDeckWrapper's
     // header comment for why this protects the owner's OWN session most of all.
-    return html(htmlDeckWrapper(rawHtml, meta.title))
+    return html(htmlDeckWrapper(rawHtml, meta.title, id))
   }
 
   const doc = await getDeckDoc(env, id)
@@ -771,8 +740,55 @@ async function handleView(req: Request, env: Env, id: string, download: boolean)
     const title = typeof (doc as { title?: unknown }).title === 'string' ? (doc as { title: string }).title : 'deck'
     const filename = title.replace(/[^\w.-]+/g, '_').slice(0, 80) || 'deck'
     headers['content-disposition'] = `attachment; filename="${filename}.bento.html"`
+    // A downloaded file is a portable standalone artifact — no host
+    // announcement, so it never points a locally-opened copy at a /pdf URL
+    // that only exists relative to THIS deployment.
+    return html(spliced, { headers })
   }
-  return html(spliced, { headers })
+  // Announce server-side PDF rendering to the booting app (kernel/src/
+  // save.ts's hostPdfUrl / `window.__bentoHost` contract) — both the editor
+  // topbar button and the read-only player card check this before falling
+  // back to local print. Inserted right after the guaranteed, attribute-free
+  // `<head>` open tag emitted by split-shell.mjs, so it runs before the
+  // app's own bundle.
+  return html(spliced.replace('<head>', `<head><script>window.__bentoHost={ops:["pdf-download"],pdfUrl:"/d/${id}/pdf"}<\/script>`), { headers })
+}
+
+/** GET /d/:id/pdf — a real, server-rendered PDF (pdf.ts, Cloudflare Browser
+ *  Rendering), same access/private/password gating as handleView. Every
+ *  render is cached in R2 keyed to the deck's own `updated_at`
+ *  (store.ts's getCachedPdf/putCachedPdf) — this is reachable by any viewer
+ *  with access, not just the owner, and Browser Rendering's free tier is
+ *  tight (see env.ts), so a repeat download of an unchanged deck must never
+ *  re-invoke the browser. */
+async function handlePdf(req: Request, env: Env, id: string): Promise<Response> {
+  const [meta, owner] = await Promise.all([getDeckMeta(env, id), isAuthenticated(req, env)])
+  if (!meta) return notFound()
+  if (!owner && meta.access === 'private') return notFound()
+  if (!owner && !(await isDeckUnlocked(req, meta))) return html(renderDeckPasswordGate(id, 'pdf'))
+
+  const filename = meta.title.replace(/[^\w.-]+/g, '_').slice(0, 80) || 'deck'
+  const pdfHeaders: HeadersInit = {
+    'content-type': 'application/pdf',
+    'content-disposition': `attachment; filename="${filename}.pdf"`,
+  }
+
+  const cached = await getCachedPdf(env, id, meta.updated_at)
+  if (cached) return new Response(cached, { headers: pdfHeaders })
+
+  let bytes: ArrayBuffer
+  if (meta.kind === 'html') {
+    const rawHtml = await getDeckHtml(env, id)
+    if (rawHtml === null) return notFound()
+    bytes = await renderHtmlDeckPdf(env, rawHtml)
+  } else {
+    // The deck's OWN live URL — whatever a real viewer would see (editor or
+    // player mode, per `access`) is exactly what gets rendered.
+    const origin = new URL(req.url).origin
+    bytes = await renderBentoDeckPdf(env, `${origin}/d/${id}`)
+  }
+  await putCachedPdf(env, id, meta.updated_at, bytes)
+  return new Response(bytes, { headers: pdfHeaders })
 }
 
 async function handleAsset(req: Request, env: Env, id: string, key: string): Promise<Response> {
@@ -948,6 +964,9 @@ export default {
       }
       if (parts[0] === 'd' && parts.length === 3 && parts[2] === 'download' && req.method === 'GET') {
         return await handleView(req, env, parts[1]!, true)
+      }
+      if (parts[0] === 'd' && parts.length === 3 && parts[2] === 'pdf' && req.method === 'GET') {
+        return await handlePdf(req, env, parts[1]!)
       }
 
       if (parts[0] === 'a' && parts.length === 3 && req.method === 'GET') {

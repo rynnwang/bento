@@ -12,6 +12,7 @@
     "test:router": "node test/router.test.mjs"
   },
   "devDependencies": {
+    "@cloudflare/puppeteer": "^1.4.0",
     "@cloudflare/workers-types": "^5.20260801.1",
     "esbuild": "^0.28.1",
     "typescript": "~5.8.3",

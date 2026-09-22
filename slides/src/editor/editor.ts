@@ -25,7 +25,7 @@ import { startPresentation } from '../present'
 // serializeFile (plain output) is deliberately NOT imported here: every path
 // in this file writes a real file for a person, so all of them must inherit an
 // active password. serializeAuto is the only encryption-aware serializer.
-import { adoptFileHandle, canWriteInPlace, currentFileName, fileBase, hasFileHandle, hostCan, isEncryptionActive, openedFileName, saveFile, serializeAuto, setEncryptionPassword, suggestedFileName, writeUpdatedFile, writeUpdatedFileAs } from '../save'
+import { adoptFileHandle, canWriteInPlace, currentFileName, fileBase, hasFileHandle, hostCan, hostPdfUrl, isEncryptionActive, openedFileName, saveFile, serializeAuto, setEncryptionPassword, suggestedFileName, writeUpdatedFile, writeUpdatedFileAs } from '../save'
 import { noteSavedFromWeb } from './returngate'
 import { addVersion, clearRecovery, clearVersions, docContentKey, getRecovery, listVersions, pruneOld, putRecovery, type Snapshot } from '../autosave'
 import { insertElements, insertSlides, parseClip, serializeElements, serializeSlides } from './clipboard'
@@ -1922,14 +1922,17 @@ export class Editor {
   }
 
   /**
-   * Export the deck to PDF via the browser's print pipeline — the actual
-   * page-building logic is shared with the read-only player card (see
-   * pdfexport.ts), since it needs no Editor instance. Only the text-commit
-   * is editor-specific.
+   * A host that can render a real PDF server-side (the platform Worker)
+   * gets a direct download; otherwise this falls back to the local
+   * browser's print pipeline — the page-building logic itself is shared
+   * with the read-only player card either way (see pdfexport.ts), since it
+   * needs no Editor instance. Only the text-commit is editor-specific.
    */
   exportPdf() {
     this.canvas.commitTextEdit()
-    exportDeckPdf(this.store.doc)
+    const pdfUrl = hostPdfUrl()
+    if (pdfUrl) window.location.href = pdfUrl
+    else exportDeckPdf(this.store.doc)
   }
 
   // --- insert image ------------------------------------------------------------------

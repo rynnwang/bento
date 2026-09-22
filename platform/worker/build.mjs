@@ -38,6 +38,16 @@ await build({
   conditions: ['worker', 'browser'],
   minify: true,
   legalComments: 'none',
+  // @cloudflare/puppeteer (pdf.ts) imports `node:buffer` and, in an
+  // isNode-gated debug-logging path never reached in a Worker, dynamically
+  // `import('debug')`. Both are resolved at RUNTIME by the Workers
+  // nodejs_compat shim (on by default — wrangler.toml's compatibility_date
+  // is already >= 2026-08-04), not bundled — 'platform: neutral' otherwise
+  // refuses to resolve either. `wrangler deploy` (the real production path)
+  // uses its own bundler and doesn't need this; this only matters for the
+  // manual dashboard-paste fallback and for test:router, both of which use
+  // THIS esbuild config directly.
+  external: ['node:*', 'debug'],
 })
 
 console.log(`✓ bundled → platform/worker/dist/worker.js`)

@@ -9,14 +9,19 @@
 import { renderSlide } from './render.ts'
 import { inLinearFlow, type BentoDoc } from './model.ts'
 
-/** Export a deck to PDF via the browser's print pipeline: every linear slide
- *  becomes one exact page sized to the deck's own aspect (width normalised
- *  to 1600). Anything outside the linear flow stays off the paper: a state
- *  is reachable only through interaction, and a hidden slide is material the
- *  audience was not meant to be handed. The `@page`/`#bento-print` rules
- *  this relies on live in styles.css unconditionally, so they're present in
- *  both editor and player builds. */
-export function exportDeckPdf(doc: BentoDoc): void {
+/** Builds the `#bento-print` box: every linear slide becomes one exact page
+ *  sized to the deck's own aspect (width normalised to 1600). Anything
+ *  outside the linear flow stays off the paper: a state is reachable only
+ *  through interaction, and a hidden slide is material the audience was not
+ *  meant to be handed. The `@page`/`#bento-print` rules this relies on live
+ *  in styles.css unconditionally, so they're present in both editor and
+ *  player builds. Split out from exportDeckPdf so a server-side render (the
+ *  platform's Download PDF — see platform/worker/src/pdf.ts) can build the
+ *  identical box via `window.bento.preparePdf()` and hand it to a real,
+ *  controlled Chromium's `page.pdf({ preferCSSPageSize: true })` instead of
+ *  the visitor's own browser's print dialog, whose margins/scale defaults
+ *  turned out unreliable for real content (docs/DECISIONS.md). */
+export function buildPrintBox(doc: BentoDoc): void {
   document.getElementById('bento-print')?.remove()
   const box = document.createElement('div')
   box.id = 'bento-print'
@@ -38,6 +43,16 @@ export function exportDeckPdf(doc: BentoDoc): void {
     box.appendChild(page)
   }
   document.body.appendChild(box)
+}
+
+/** Export a deck to PDF via the LOCAL browser's own print pipeline —
+ *  `buildPrintBox` then `window.print()`. Kept for offline use (no network
+ *  round trip) and as the fallback save path; the platform's live "Download
+ *  PDF" button instead drives a server-side render (see buildPrintBox's own
+ *  comment) for consistent output independent of the visitor's browser/OS. */
+export function exportDeckPdf(doc: BentoDoc): void {
+  buildPrintBox(doc)
+  const box = document.getElementById('bento-print')!
   const cleanup = () => {
     box.remove()
     window.removeEventListener('afterprint', cleanup)
