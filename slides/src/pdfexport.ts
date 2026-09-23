@@ -9,6 +9,7 @@
 import { renderSlide } from './render.ts'
 import { inLinearFlow, type BentoDoc } from './model.ts'
 import { t } from './i18n.ts'
+import { netFetch, OfflineError } from '../../kernel/src/net.ts'
 
 /** Builds the `#bento-print` box: every linear slide becomes one exact page
  *  sized to the deck's own aspect (width normalised to 1600). Anything
@@ -73,14 +74,18 @@ export function exportDeckPdf(doc: BentoDoc): void {
  *  happening until the browser's own download UI appears seconds later.
  *  Reuses the existing, already-fully-translated `t('Requesting…')` key
  *  (currently unused elsewhere in this app) rather than adding a new one
- *  just for this wording. */
+ *  just for this wording. Goes through `netFetch` (kernel/src/net.ts), not
+ *  raw `fetch` — Offline Mode's whole guarantee rests on `scripts/
+ *  test-offline.ts` failing the build if ANY file outside net.ts calls
+ *  `fetch(`/`new WebSocket` directly, so a server-rendered PDF download is
+ *  exactly the kind of network touch that switch must also catch. */
 export async function downloadServerPdf(url: string, button: HTMLElement): Promise<void> {
   const original = button.innerHTML
   const btn = button as HTMLButtonElement
   btn.disabled = true
   button.innerHTML = `<span class="ed-spinner"></span>${t('Requesting…')}`
   try {
-    const res = await fetch(url)
+    const res = await netFetch(url)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const blob = await res.blob()
     const disposition = res.headers.get('content-disposition') ?? ''
@@ -96,7 +101,7 @@ export async function downloadServerPdf(url: string, button: HTMLElement): Promi
     button.innerHTML = t('Downloaded ✓')
   } catch (err) {
     console.error(err)
-    button.innerHTML = 'Download failed'
+    button.innerHTML = err instanceof OfflineError ? 'Offline' : 'Download failed'
   } finally {
     setTimeout(() => {
       btn.disabled = false
