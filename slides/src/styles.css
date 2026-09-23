@@ -1487,6 +1487,26 @@ body.ed-col-resizing { cursor: col-resize; user-select: none; }
   outline-offset: -2px;
 }
 
+/* Loading spinner for the server-rendered "Download PDF" button
+   (pdfexport.ts's downloadServerPdf) — currentColor so it reads correctly
+   whether the button is dark-on-light (editor topbar) or white-on-dark
+   (player card, see .ed-playercard button rules) without a second rule set. */
+.ed-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 6px;
+  vertical-align: -2px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  opacity: 0.85;
+  animation: ed-spin 0.7s linear infinite;
+}
+@keyframes ed-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* PDF export: each linear slide is one exact 1600×900 page */
 #bento-print { display: none; }
 @media print {

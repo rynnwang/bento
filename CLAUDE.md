@@ -273,7 +273,20 @@ Current feature set, all owner-only except where noted:
   one deployment); with no such host, both buttons fall back to the
   original v1 local `exportDeckPdf()` print path, which still exists and
   still works fully offline. Full tradeoff/rationale: `docs/DECISIONS.md`
-  2026-09-22.
+  2026-09-22. **All three server-render buttons show a loading state**
+  (`pdfexport.ts`'s `downloadServerPdf`, and an inline-script twin in
+  `htmlDeckWrapper` for the sandboxed-iframe case, since that context can't
+  import slides/ code) — the FIRST download after an edit is a real cold
+  Browser Rendering render, not the usual instant R2 cache hit, and a bare
+  link/`location.href` navigation gave the visitor no sign anything was
+  happening until the browser's download UI appeared seconds later. All
+  three now `fetch()` the PDF (not a plain navigation), disable the button,
+  swap in a small `currentColor`-based CSS spinner + `t('Requesting…')`
+  (an existing, fully-translated key that was otherwise unused in this
+  app — reused rather than adding a new one just for this wording), then
+  build a `Blob`/`URL.createObjectURL` download on success and restore the
+  button after a short delay either way (success or failure) so a repeat
+  click always works.
 - **`kind:'html'` decks** — a second, deliberately opaque deck kind
   alongside the compiled `'bento'` kind: a complete, self-running HTML slide
   deck some AIs will generate directly if asked (no `bento/slides` JSON at

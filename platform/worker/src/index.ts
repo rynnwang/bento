@@ -221,7 +221,7 @@ function extractHtmlTitle(rawHtml: string): string {
  *  (not the same escaping as element content — `<`/`>` are fine here,
  *  `"` is not).
  *
- *  **Download PDF (v2)**: a plain link in THIS wrapper (never inside the
+ *  **Download PDF (v2)**: a link in THIS wrapper (never inside the
  *  sandboxed iframe — an untrusted deck's own script must never be able to
  *  fake the control) to `/d/:id/pdf`, which server-renders a REAL PDF via
  *  Cloudflare Browser Rendering (see pdf.ts) and returns it directly — no
@@ -232,7 +232,14 @@ function extractHtmlTitle(rawHtml: string): string {
  *  never authored with in mind — paginated badly through a VISITOR's own
  *  browser print dialog, whose margin/scale defaults we don't control (see
  *  docs/DECISIONS.md). A real, server-controlled Chromium instance gives a
- *  deterministic result independent of the visitor's own browser/OS. */
+ *  deterministic result independent of the visitor's own browser/OS.
+ *  Click is intercepted (fetch + blob download, not a plain navigation)
+ *  specifically so a loading state can show: the FIRST download of a
+ *  freshly-edited deck is a real Browser Rendering cold render (pdf.ts),
+ *  not the instant R2 cache hit every later download gets, and a plain
+ *  link click gives the visitor no sign anything is happening until the
+ *  browser's own download UI appears seconds later — same fix, and same
+ *  reasoning, as slides/src/pdfexport.ts's downloadServerPdf. */
 function htmlDeckWrapper(rawHtml: string, title: string, id: string): string {
   const srcdocEscaped = rawHtml.replace(/&/g, '&amp;').replace(/"/g, '&quot;')
   const titleEscaped = title.replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -245,10 +252,56 @@ iframe{border:0;width:100vw;height:100vh;display:block}
   border-radius:999px;background:rgb(13 27 46 / 0.55);backdrop-filter:blur(6px);color:#fff;font:13px/1 -apple-system,
   BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;cursor:pointer;text-decoration:none;display:inline-block}
 #bento-pdf-btn:hover{background:rgb(13 27 46 / 0.8)}
+#bento-pdf-btn[aria-busy="true"]{cursor:default;pointer-events:none}
+#bento-pdf-spin{display:inline-block;width:11px;height:11px;margin-right:6px;vertical-align:-1px;
+  border:2px solid currentColor;border-right-color:transparent;border-radius:50%;opacity:.85;
+  animation:bento-pdf-spin .7s linear infinite}
+@keyframes bento-pdf-spin{to{transform:rotate(360deg)}}
 </style>
 </head><body>
 <iframe id="bento-html-frame" sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals" srcdoc="${srcdocEscaped}"></iframe>
 <a id="bento-pdf-btn" href="/d/${id}/pdf">⬇ Download PDF</a>
+<script>
+(function () {
+  var btn = document.getElementById('bento-pdf-btn')
+  var original = btn.innerHTML
+  btn.addEventListener('click', function (ev) {
+    ev.preventDefault()
+    if (btn.getAttribute('aria-busy') === 'true') return
+    btn.setAttribute('aria-busy', 'true')
+    btn.innerHTML = '<span id="bento-pdf-spin"></span>Requesting…'
+    fetch(btn.getAttribute('href'))
+      .then(function (res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status)
+        return res.blob().then(function (blob) { return { blob: blob, res: res } })
+      })
+      .then(function (r) {
+        var disposition = r.res.headers.get('content-disposition') || ''
+        var match = /filename="([^"]+)"/.exec(disposition)
+        var filename = (match && match[1]) || 'deck.pdf'
+        var objectUrl = URL.createObjectURL(r.blob)
+        var a = document.createElement('a')
+        a.href = objectUrl
+        a.download = filename
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        URL.revokeObjectURL(objectUrl)
+        btn.innerHTML = 'Downloaded ✓'
+      })
+      .catch(function (e) {
+        console.error(e)
+        btn.innerHTML = 'Download failed'
+      })
+      .then(function () {
+        setTimeout(function () {
+          btn.removeAttribute('aria-busy')
+          btn.innerHTML = original
+        }, 1500)
+      })
+  })
+})()
+<\/script>
 </body></html>`
 }
 

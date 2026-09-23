@@ -8,6 +8,7 @@
 
 import { renderSlide } from './render.ts'
 import { inLinearFlow, type BentoDoc } from './model.ts'
+import { t } from './i18n.ts'
 
 /** Builds the `#bento-print` box: every linear slide becomes one exact page
  *  sized to the deck's own aspect (width normalised to 1600). Anything
@@ -60,4 +61,46 @@ export function exportDeckPdf(doc: BentoDoc): void {
   window.addEventListener('afterprint', cleanup)
   // give the freshly-inserted images a beat to decode before printing
   setTimeout(() => window.print(), 250)
+}
+
+/** Downloads the platform's server-rendered PDF from `url` (kernel/src/
+ *  save.ts's hostPdfUrl — GET /d/:id/pdf), showing a loading state on
+ *  `button` while it's in flight and restoring it after. Fetched (not a
+ *  plain navigation) specifically so this loading state is possible: the
+ *  FIRST download of a freshly-edited deck is a real Browser Rendering
+ *  cold render (platform/worker/src/pdf.ts), not the usual instant R2
+ *  cache hit, and a plain link click gives the visitor no sign anything is
+ *  happening until the browser's own download UI appears seconds later.
+ *  Reuses the existing, already-fully-translated `t('Requesting…')` key
+ *  (currently unused elsewhere in this app) rather than adding a new one
+ *  just for this wording. */
+export async function downloadServerPdf(url: string, button: HTMLElement): Promise<void> {
+  const original = button.innerHTML
+  const btn = button as HTMLButtonElement
+  btn.disabled = true
+  button.innerHTML = `<span class="ed-spinner"></span>${t('Requesting…')}`
+  try {
+    const res = await fetch(url)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const blob = await res.blob()
+    const disposition = res.headers.get('content-disposition') ?? ''
+    const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? 'deck.pdf'
+    const objectUrl = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = objectUrl
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(objectUrl)
+    button.innerHTML = t('Downloaded ✓')
+  } catch (err) {
+    console.error(err)
+    button.innerHTML = 'Download failed'
+  } finally {
+    setTimeout(() => {
+      btn.disabled = false
+      button.innerHTML = original
+    }, 1500)
+  }
 }

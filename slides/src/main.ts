@@ -28,7 +28,7 @@ import { Editor } from './editor/editor'
 import { startPresentation } from './present'
 import { SyncSession } from './sync/session'
 import { onlineTransport, startSharing, stopSharing } from './sync/online'
-import { exportDeckPdf, buildPrintBox } from './pdfexport.ts'
+import { exportDeckPdf, buildPrintBox, downloadServerPdf } from './pdfexport.ts'
 
 // Tell the kernel who this app is — must precede any kernel module use
 // (window title suffix, save-picker label, update manifest + its `app` check).
@@ -149,9 +149,10 @@ function playerMode(doc: BentoDoc) {
   // A host that can render a real PDF server-side (the platform Worker)
   // gets a direct download instead of the local browser's own print
   // dialog, whose margin/scale defaults are the visitor's, not ours — the
-  // label stays the same either way (still "get a PDF"), just the
-  // mechanism behind the click differs, so this needs no new translated
-  // string.
+  // IDLE label stays the same either way (still "get a PDF"), so this
+  // needs no new translated string for that part. downloadServerPdf shows
+  // its own transient loading state on click (reusing an already-
+  // translated, currently-unused key — see its own comment).
   const pdfUrl = hostPdfUrl()
   const card = document.createElement('div')
   card.className = 'ed-player'
@@ -169,8 +170,8 @@ function playerMode(doc: BentoDoc) {
     })
   }
   card.querySelector('.ed-playgo')!.addEventListener('click', start)
-  card.querySelector('.ed-playpdf')!.addEventListener('click', () => {
-    if (pdfUrl) window.location.href = pdfUrl
+  card.querySelector('.ed-playpdf')!.addEventListener('click', (ev) => {
+    if (pdfUrl) void downloadServerPdf(pdfUrl, ev.currentTarget as HTMLElement)
     else exportDeckPdf(doc)
   })
   card.querySelector('.ed-playcopy')!.addEventListener('click', () => {
