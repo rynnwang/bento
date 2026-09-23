@@ -16,7 +16,7 @@ import type { InPlaceOutcome } from '../update'
 import { APP_VERSION, applyUpdate, applyUpdateInPlace, autoCheckEnabled, canUpdateInPlace, checkForUpdates, compareVersions, offlineEnabled, setAutoCheck, setOffline } from '../update'
 import { CHART_PRESETS } from '../charts'
 import { renderThumbnail } from '../render'
-import { exportDeckPdf } from '../pdfexport.ts'
+import { exportDeckPdf, downloadServerPdf } from '../pdfexport.ts'
 import { paletteSignature, resolveThemeRefs } from '../palette'
 import { SlideCanvas } from './canvas'
 import { PropsPanel } from './panels'
@@ -318,7 +318,7 @@ export class Editor {
       ? t('Save — rewrite this file in place (⌘S)')
       : t('Save — download an updated copy (⌘S). This browser can’t rewrite the open file.'))
     saveB.appendChild(this.dirtyDot) // the amber unsaved-changes dot lives ON Save
-    const pdfB = btn(ICONS.pdf, '', () => this.exportPdf(), t('Export PDF (print)'))
+    const pdfB = btn(ICONS.pdf, '', (ev) => this.exportPdf(ev.currentTarget as HTMLElement), t('Export PDF (print)'))
     const helpB = btn('<b class="ed-help-q">?</b>', '', () => this.openHelp(), t('Shortcuts & tips (?)'))
     helpB.classList.add('ed-btn-help')
     this.avatarsBox = div('ed-avatars')
@@ -1923,15 +1923,17 @@ export class Editor {
 
   /**
    * A host that can render a real PDF server-side (the platform Worker)
-   * gets a direct download; otherwise this falls back to the local
-   * browser's print pipeline — the page-building logic itself is shared
-   * with the read-only player card either way (see pdfexport.ts), since it
-   * needs no Editor instance. Only the text-commit is editor-specific.
+   * gets a direct download, with a loading state on `button` while the
+   * (possibly slow, uncached) render is in flight — see pdfexport.ts's
+   * downloadServerPdf. Otherwise this falls back to the local browser's
+   * print pipeline — the page-building logic itself is shared with the
+   * read-only player card either way, since it needs no Editor instance.
+   * Only the text-commit is editor-specific.
    */
-  exportPdf() {
+  exportPdf(button: HTMLElement) {
     this.canvas.commitTextEdit()
     const pdfUrl = hostPdfUrl()
-    if (pdfUrl) window.location.href = pdfUrl
+    if (pdfUrl) void downloadServerPdf(pdfUrl, button)
     else exportDeckPdf(this.store.doc)
   }
 
