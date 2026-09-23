@@ -14,6 +14,57 @@ Decision. Why. Pointers.
 
 ---
 
+## 2026-09-23 — `'html'` deck PDF: canvas-containing decks (interactive maps, WebGL) get an extra settle wait, NOT a `toDataURL()` snapshot
+
+**Decision.** `platform/worker/src/pdf.ts`'s `renderHtmlDeckPdf`, when the
+page contains any `<canvas>`, now waits an extra `CANVAS_SETTLE_MS`
+(5000ms) after `networkidle0` before taking the PDF snapshot — gated on
+canvas presence so an ordinary canvas-free deck (most of them) pays
+nothing extra. Bumped `PDF_RENDER_VERSION` to 4 (same cache-invalidation
+mechanism as the two entries above).
+
+**Why.** Reported: an interactive-map deck (MapLibre GL JS) downloads with
+the map area gray and empty in the PDF. `networkidle0` only tracks NETWORK
+activity — it's satisfied once the map library has finished FETCHING its
+style/tiles, which can be well before it has actually PAINTED them (tile
+decode, often in a Worker, and the WebGL draw call happen entirely off the
+network). The snapshot can land in that gap. This is plausibly worse
+specifically on Browser Rendering: Cloudflare's own community forum
+reports slow WebGL2 there, consistent with cloud/headless Chromium
+commonly having no real GPU and falling back to a CPU software rasterizer
+(SwiftShader) — still functional, just markedly slower than hardware
+rendering.
+
+**What was tried and REJECTED.** The first instinct was to freeze each
+canvas to a static `<img>` via `canvas.toDataURL()` right before the
+snapshot — the same "snapshot live/complex content into a static image"
+philosophy `slides/src/preview.ts` already uses for thumbnails. Verified
+directly (a raw WebGL triangle, real local Chrome via `puppeteer-core`,
+NOT Cloudflare's service) that this makes things WORSE, not better: the
+UN-frozen canvas printed correctly; the SAME canvas came out blank once
+swapped for a `toDataURL()` snapshot. Root cause: `toDataURL()` reads from
+WebGL's own drawing buffer, which the browser may clear immediately after
+compositing when `preserveDrawingBuffer` is false (the default, and not
+something this Worker can change — it doesn't control a deck's own
+script). Chromium's native print/PDF pipeline instead reads from the
+COMPOSITOR's retained texture, which survives that clear — so the fix is
+to let Chromium's own capture do its job, just later.
+
+**Open question — genuinely unverified.** This has NOT been confirmed
+against a real MapLibre deck through actual Browser Rendering (no owner
+credentials to test end-to-end from this session). If maps are still
+blank after this ships, the next thing to check is whether Browser
+Rendering's Chromium can create a WebGL2 context AT ALL — MapLibre v6
+dropped WebGL1 (see the 2026-09-20 sandbox entry), so no context means no
+fallback either, and no amount of extra waiting fixes that case. A
+genuinely different approach (e.g. a static tile-image fallback, deck-
+specific and not generically buildable) would be needed then.
+
+**Pointers.** `platform/worker/src/pdf.ts` (`CANVAS_SETTLE_MS`,
+`renderHtmlDeckPdf`'s own comment has the full investigation).
+
+---
+
 ## 2026-09-23 — `'html'` deck PDFs get an explicit page margin (Puppeteer's `margin` is opt-in, not sane-default)
 
 **Decision.** `platform/worker/src/pdf.ts`'s `renderHtmlDeckPdf` now passes

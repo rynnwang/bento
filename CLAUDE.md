@@ -258,11 +258,29 @@ Current feature set, all owner-only except where noted:
   (`pdfexport.ts`'s `buildPrintBox`) is correctly honored by
   `preferCSSPageSize` with no `margin` option set, confirmed separately;
   zero margin is the RIGHT output there (a slide fills its page).
-  `docs/DECISIONS.md` 2026-09-23 (two entries) has the full story,
-  including why "seamless" wasn't kept as an opt-in. `PDF_RENDER_VERSION`
-  (`pdf.ts`, now 3) is folded into the R2 cache key alongside `updated_at`
-  specifically so a rendering-logic fix like either of these can never
-  keep being served from a stale cache entry. Both the editor
+  `docs/DECISIONS.md` 2026-09-23 (three entries) has the full story,
+  including why "seamless" wasn't kept as an opt-in. **A canvas-containing
+  `'html'` deck (an interactive map, WebGL) gets an extra
+  `CANVAS_SETTLE_MS` (5s) wait** before the snapshot, gated on canvas
+  presence so an ordinary deck pays nothing extra — `networkidle0` only
+  tracks network activity, which a map library can satisfy well before it
+  has actually PAINTED its tiles (decode + WebGL draw happen off the
+  network entirely), and Browser Rendering's Chromium plausibly has no
+  real GPU (community reports of slow WebGL2 there), falling back to a
+  CPU software rasterizer. The instinct to instead freeze each canvas to a
+  static `<img>` via `toDataURL()` (mirroring `preview.ts`'s thumbnail
+  philosophy) was tried and REJECTED — verified directly that it makes
+  things WORSE (`toDataURL()` reads WebGL's drawing buffer, which the
+  browser may clear after compositing; Chromium's native print pipeline
+  reads the compositor's retained texture instead, and gets it right on
+  its own once given time). **This has NOT been confirmed against a real
+  map deck through actual Browser Rendering** — no owner credentials to
+  test end-to-end from a session; if still blank, the next thing to check
+  is whether that Chromium can create a WebGL2 context at all (MapLibre v6
+  has no WebGL1 fallback), which no amount of waiting would fix.
+  `PDF_RENDER_VERSION` (`pdf.ts`, now 4) is folded into the R2 cache key
+  alongside `updated_at` specifically so a rendering-logic fix like any of
+  these can never keep being served from a stale cache entry. Both the editor
   topbar button and the player card check a new host-capability
   reader, `kernel/src/save.ts`'s `hostPdfUrl()` (mirrors the existing
   `hostCan()`/`window.__bentoHost` pattern, but does NOT gate on
