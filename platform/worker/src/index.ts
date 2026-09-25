@@ -282,8 +282,10 @@ iframe{border:0;width:100vw;height:100vh;display:block}
       })
       .then(function (r) {
         var disposition = r.res.headers.get('content-disposition') || ''
+        var star = /filename\\*=UTF-8''([^;]+)/i.exec(disposition)
         var match = /filename="([^"]+)"/.exec(disposition)
         var filename = (match && match[1]) || 'deck.pdf'
+        try { if (star) filename = decodeURIComponent(star[1]) } catch (e) {}
         var objectUrl = URL.createObjectURL(r.blob)
         var a = document.createElement('a')
         a.href = objectUrl
@@ -874,16 +876,28 @@ async function handleView(req: Request, env: Env, id: string, download: boolean)
  *  with access, not just the owner, and Browser Rendering's free tier is
  *  tight (see env.ts), so a repeat download of an unchanged deck must never
  *  re-invoke the browser. */
+/** `{title}-{YYYYMMDD-HHmmss}.pdf`. The stamp is the deck's last-edit time (UTC), not
+ *  "now": the PDF is cached per `updated_at`, so a repeat download of an unchanged
+ *  deck gets the identical name. The title keeps its Unicode via `filename*`; the
+ *  plain `filename` is an ASCII fallback (header values must be latin1). */
+function pdfContentDisposition(title: string, updatedAt: number): string {
+  const d = new Date(updatedAt)
+  const p = (n: number) => String(n).padStart(2, '0')
+  const stamp = `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}-${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}`
+  const base = title.replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) || 'deck'
+  const ascii = base.replace(/[^\x20-\x7e]+/g, '_').replace(/[%"\\]/g, '_')
+  return `attachment; filename="${ascii}-${stamp}.pdf"; filename*=UTF-8''${encodeURIComponent(`${base}-${stamp}.pdf`)}`
+}
+
 async function handlePdf(req: Request, env: Env, id: string): Promise<Response> {
   const [meta, owner] = await Promise.all([getDeckMeta(env, id), isAuthenticated(req, env)])
   if (!meta) return notFound()
   if (!owner && meta.access === 'private') return notFound()
   if (!owner && !(await isDeckUnlocked(req, meta))) return html(renderDeckPasswordGate(id, 'pdf'))
 
-  const filename = meta.title.replace(/[^\w.-]+/g, '_').slice(0, 80) || 'deck'
   const pdfHeaders: HeadersInit = {
     'content-type': 'application/pdf',
-    'content-disposition': `attachment; filename="${filename}.pdf"`,
+    'content-disposition': pdfContentDisposition(meta.title, meta.updated_at),
   }
 
   const cached = await getCachedPdf(env, id, meta.updated_at, PDF_RENDER_VERSION)

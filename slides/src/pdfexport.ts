@@ -89,7 +89,13 @@ export async function downloadServerPdf(url: string, button: HTMLElement): Promi
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const blob = await res.blob()
     const disposition = res.headers.get('content-disposition') ?? ''
-    const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? 'deck.pdf'
+    const star = /filename\*=UTF-8''([^;]+)/i.exec(disposition)?.[1]
+    let filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? 'deck.pdf'
+    try {
+      if (star) filename = decodeURIComponent(star)
+    } catch {
+      /* malformed escape — keep the ASCII fallback */
+    }
     const objectUrl = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = objectUrl
