@@ -444,6 +444,12 @@ ${PAGE_STYLES}
   .format-list { margin: 0 0 8px; padding-left: 20px; font-size: 13.5px; line-height: 1.6; color: var(--text); }
   .format-list li { margin: 2px 0; }
   .hint { color: var(--muted); font-size: 13px; margin: 0 0 10px; }
+  details.optional > summary { cursor: pointer; font-weight: 600; font-size: 15px; list-style: none; display: flex; align-items: center; gap: 10px; }
+  details.optional > summary::-webkit-details-marker { display: none; }
+  details.optional > summary::before { content: '▸'; color: var(--muted); font-size: 12px; transition: transform .15s; }
+  details.optional[open] > summary::before { transform: rotate(90deg); }
+  details.optional[open] > summary { margin-bottom: 12px; }
+  .opt-tag { font-size: 10.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); border: 1px solid var(--border, #d9d4cb); border-radius: 999px; padding: 2px 8px; }
   textarea.dragging { border-color: var(--accent); background: var(--bg-elev); box-shadow: 0 0 0 3px rgb(237 130 102 / 0.25); }
   .detected { min-height: 20px; margin: 8px 0 4px; font-size: 13px; color: var(--muted); }
   .detected.ok { color: var(--ok, #3aa86b); }
@@ -706,41 +712,17 @@ ${PAGE_STYLES}
       <header class="hero hero-row">
         <div>
           <button class="menu-toggle" id="menuToggle" type="button" aria-label="Toggle deck history">☰</button>
-          <h1>Bento platform <span>·</span> compile &amp; create</h1>
-          <p class="subtitle">Two steps: get an outline from an AI you're already talking to, paste it back here, get a deck.</p>
+          <h1>Bento platform <span>·</span> create</h1>
+          <p class="subtitle">Paste a link, Markdown or HTML — or drop a file — and get a shareable page.</p>
         </div>
       </header>
 
       <section class="card">
-        <div class="step-label">Step 1</div>
-        <h2>Get an outline from your AI chat</h2>
-        <p><strong>First, chat with an AI</strong> (ChatGPT, Claude, whatever) about your topic until
-        you're happy with what a page-by-page outline should cover. Then pick the pattern closest to
-        what you're making, copy the prompt below, and paste it as your <strong>next message in that
-        same conversation</strong> — the AI already has the context, so it turns what you discussed
-        into JSON matching our schema without you re-explaining anything.</p>
-        <div class="pattern-picker" id="patternPicker"></div>
-        <p class="pattern-blurb" id="patternBlurb"></p>
-        <pre class="prompt" id="promptText"></pre>
-        <div class="actions">
-          <button id="copyPrompt" class="primary" type="button">Copy prompt</button>
-        </div>
-      </section>
-
-      <section class="card">
-        <div class="step-label">Step 2</div>
-        <h2>Paste or upload — we'll work out the format</h2>
-        <p>One box for everything. Paste text, drop a file onto it, or use <strong>Upload file…</strong> —
-        the format is detected from the content, so you never have to pick one:</p>
-        <ul class="format-list">
-          <li><strong>Outline JSON</strong> (from step 1) — compiled into a Bento deck you can edit and present</li>
-          <li><strong>A <code>bento/slides</code> document</strong> (advanced) — stored as-is, editable</li>
-          <li><strong>A complete HTML page</strong> (<code>&lt;!doctype html&gt;</code>…) — stored and served as-is</li>
-          <li><strong>Markdown</strong> (<code>.md</code>) — rendered as a clean web page; keeps your source</li>
-          <li><strong>A web page URL</strong> (just paste the link) — we fetch the article and save it as Markdown; images stay online</li>
-        </ul>
-        <p class="hint">HTML and Markdown decks are always view-only for anyone but you.</p>
-        <textarea id="input" spellcheck="false" placeholder="Paste outline JSON, a bento/slides document, an HTML page, Markdown, or a web page URL — or drop a file here"></textarea>
+        <h2>Create a deck</h2>
+        <p class="hint">Paste a <strong>link</strong>, <strong>Markdown</strong>, an <strong>HTML page</strong>, or drop a file
+        onto the box — the format is detected from the content. Links are fetched and saved as Markdown (images stay online);
+        Markdown and HTML decks are view-only for anyone but you.</p>
+        <textarea id="input" spellcheck="false" placeholder="Paste a web page URL, Markdown, an HTML page (or Bento JSON) — or drop a file here"></textarea>
         <div id="detected" class="detected" aria-live="polite"></div>
         <div class="access-field">
           <label for="accessSelect">Who can open this deck's link? (changeable anytime from the sidebar's ⚙️)</label>
@@ -751,14 +733,30 @@ ${PAGE_STYLES}
           </select>
         </div>
         <div class="actions">
-          <button id="loadOutlineExample" type="button">Load pattern's example</button>
-          <button id="loadExample" type="button">Load example doc (advanced)</button>
           <button id="uploadBtn" type="button">Upload file…</button>
           <input type="file" id="fileInput" accept=".json,.html,.htm,.md,.markdown,.txt,application/json,text/html,text/markdown,text/plain" style="display:none">
           <button id="create" class="primary" type="button">Create deck →</button>
         </div>
         <div id="status" class="status"></div>
       </section>
+
+      <details class="card optional" id="bentoOption">
+        <summary><span class="opt-tag">Optional</span> Build an editable Bento slide deck with AI</summary>
+        <p class="hint">Not needed for links, Markdown or HTML. Use this to turn an AI conversation into a Bento deck you can edit
+        and present: chat with an AI (ChatGPT, Claude, …) about your topic, pick the closest pattern, copy the prompt and send it as your
+        <strong>next message in that same conversation</strong>, then paste the JSON reply into the box above. (A finished
+        <code>bento/slides</code> document pasted above is stored as-is and stays editable.)</p>
+        <div class="pattern-picker" id="patternPicker"></div>
+        <p class="pattern-blurb" id="patternBlurb"></p>
+        <pre class="prompt" id="promptText"></pre>
+        <div class="actions">
+          <button id="copyPrompt" class="primary" type="button">Copy prompt</button>
+        </div>
+        <div class="actions">
+          <button id="loadOutlineExample" type="button">Load pattern's example</button>
+          <button id="loadExample" type="button">Load example doc (advanced)</button>
+        </div>
+      </details>
     </div>
   </main>
 </div>
@@ -1659,15 +1657,18 @@ function loadFile(file) {
   reader.readAsText(file)
 }
 document.getElementById('input').addEventListener('input', () => { pickedFilename = ''; afterInputChanged() })
+function showInputBox() { document.getElementById('input').scrollIntoView({ block: 'center', behavior: 'smooth' }) }
 document.getElementById('loadOutlineExample').onclick = () => {
   pickedFilename = ''
   document.getElementById('input').value = JSON.stringify(activePattern.example, null, 2)
   afterInputChanged()
+  showInputBox()
 }
 document.getElementById('loadExample').onclick = () => {
   pickedFilename = ''
   document.getElementById('input').value = ${JSON.stringify(exampleJson)}
   afterInputChanged()
+  showInputBox()
 }
 document.getElementById('uploadBtn').onclick = () => {
   document.getElementById('fileInput').click()

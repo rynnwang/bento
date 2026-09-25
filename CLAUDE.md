@@ -209,7 +209,8 @@ Current feature set, all owner-only except where noted:
   content change does. 200ms debounce, 10-result cap, arrow-key
   highlight, Enter opens the highlighted result, each result a plain
   `<a target="_blank">`. Owner-only, like every other route here.
-- **Content patterns** (`demo.ts`'s `PATTERNS`) — Step 1's prompt is one of
+- **Create page layout (2026-09-25)** — the one paste/upload box (URL / Markdown / HTML / files; Bento JSON still auto-detected) is the PRIMARY card; the AI-outline prompt + patterns live in a collapsed `<details id="bentoOption">` "Optional" card below it (Bento decks are the rarely-used path).
+- **Content patterns** (`demo.ts`'s `PATTERNS`) — the (now optional, collapsed) Bento prompt is one of
   four genre-specific briefs (General/Business review/Pitch deck/Tutorial),
   each with its own guidance paragraph and loadable example; every pattern
   compiles through the identical schema, so this only changes what's asked
