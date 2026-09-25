@@ -14,6 +14,56 @@ Decision. Why. Pointers.
 
 ---
 
+## 2026-09-25 — Markdown decks: a third kind (`'md'`) storing raw source, rendered at view time by an in-house escaping renderer
+
+**Decision.** The platform accepts Markdown. `POST /api/decks` takes
+`{ md }` (alongside `{ doc }` / `{ html }`), creating a `kind:'md'` deck
+(no migration — `decks.kind` is unconstrained TEXT). Details:
+
+- **Raw source is what's stored** (`docs/<id>/doc.md`); the HTML is derived
+  on every view (`markdown.ts`'s `renderMdPage`), never stored. Chosen over
+  "convert to HTML at ingest and store an `'html'` deck" so that (a) the
+  original `.md` can be downloaded/re-uploaded byte-for-byte, and (b) a
+  renderer or stylesheet improvement reaches every existing deck.
+- **The renderer is ours, not a dependency** (`marked` etc.): ~350 lines of
+  zero-dependency CommonMark/GFM subset, matching the repo's ethos, and —
+  the real reason — **safe by construction**: raw HTML in the source is
+  ALWAYS escaped, never passed through; link/image URLs are scheme
+  allow-listed (`javascript:`/`data:`/… render as plain text); fence
+  languages are reduced to `[A-Za-z0-9_-]`. A Markdown deck therefore
+  can't carry script or a widget — that is what an `'html'` deck is for.
+  A library would have needed a separate sanitizer bolted on; this can't
+  forget to run one. Unsupported (renders as literal text, never breaks):
+  reference links, footnotes, raw HTML blocks. Images must be absolute
+  URLs (an `md` deck has no asset store).
+- **Served exactly like an `'html'` deck** — through the sandboxed iframe
+  wrapper (defense in depth in case the renderer ever has a hole; also
+  gives it the Download PDF control and full-viewport shell for free) — and
+  **PDF via the existing html path** (`renderHtmlDeckPdf` on the rendered
+  page, whose `PAGE_CSS` carries its own print stylesheet). Bump
+  `PDF_RENDER_VERSION` if that stylesheet changes in a way that should
+  invalidate cached PDFs.
+- Same access rule as `'html'`: `'edit'` is meaningless (coerced to
+  `'view'`); same title/label-only rename, re-upload, download, search
+  (`extractMdSearchText` strips syntax), delete (`doc.md` removed too).
+- **Create page: one box, format detected client-side from the content**
+  (`demo.ts`'s `detectFormat`): `{…}` that parses → outline JSON or a
+  `bento/slides` doc; `{…}` that doesn't parse → an error, NOT a Markdown
+  deck (a truncated AI reply must not silently become one — unless the
+  file is named `.md`); a leading `<!doctype html>`/`<html>`/`<head>`/
+  `<body>` (comments allowed before it) → HTML; anything else → Markdown.
+  A filename is only a tiebreaker, so paste and upload/drop behave
+  identically and there is no separate upload endpoint — a file just lands
+  in the textarea. The server stays authoritative by request key
+  (`doc`/`html`/`md`); it does not sniff.
+
+**Pointers.** `platform/worker/src/markdown.ts`, `test/markdown.spec.ts`
+(incl. the XSS cases), `store.ts`'s `createMdDeck`/`getDeckMd`/
+`replaceMdDeck`, `index.ts`'s `handleView`/`handlePdf` `'md'` branches,
+`demo.ts`'s Step 2, `test/router.test.mjs`'s `'md' decks` block.
+
+---
+
 ## 2026-09-23 — `'html'` deck PDF: canvas-containing decks (interactive maps, WebGL) get an extra settle wait, NOT a `toDataURL()` snapshot
 
 **Decision.** `platform/worker/src/pdf.ts`'s `renderHtmlDeckPdf`, when the

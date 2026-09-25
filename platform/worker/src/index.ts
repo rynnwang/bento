@@ -12,10 +12,11 @@
 //   POST /api/compile           outline JSON -> compiled bento/slides doc JSON (no storage) — OWNER ONLY
 //   GET  /api/decks             list decks, most-recently-touched first (sidebar data) — OWNER ONLY
 //   GET  /api/search?q=         title/content search, space-separated terms AND'd — OWNER ONLY
-//   POST /api/decks             create a deck: { doc } or { html } -> { id } — OWNER ONLY
+//   POST /api/decks             create a deck: { doc } | { html } | { md } -> { id } — OWNER ONLY
 //   GET  /api/decks/:id         fetch a deck's content — OWNER ONLY
 //   PATCH /api/decks/:id        replace a deck's stored content — { doc } for 'bento',
-//                               { html } for 'html' (re-upload, overwriting in place) — OWNER ONLY
+//                               { html } for 'html', { md } for 'md' (re-upload,
+//                               overwriting in place) — OWNER ONLY
 //   PATCH /api/decks/:id/access  change the deck's access level — OWNER ONLY
 //   PATCH /api/decks/:id/title  rename a deck — OWNER ONLY
 //   PATCH /api/decks/:id/pin    pin/unpin a deck (stays atop the sidebar list) — OWNER ONLY
@@ -100,11 +101,14 @@ import { sha256Hex } from './ids.ts'
 import {
   createDeck,
   createHtmlDeck,
+  createMdDeck,
   getDeckDoc,
   getDeckHtml,
+  getDeckMd,
   getDeckMeta,
   replaceDeckDoc,
   replaceHtmlDeck,
+  replaceMdDeck,
   renameHtmlDeck,
   setDeckAccess,
   setDeckPinned,
@@ -130,6 +134,7 @@ import { renderDemoPage } from './demo.ts'
 import { renderSetupPage, renderLoginPage } from './authPages.ts'
 import { renderDeckPasswordGate } from './sharePage.ts'
 import { renderBentoDeckPdf, renderHtmlDeckPdf, PDF_RENDER_VERSION } from './pdf.ts'
+import { renderMdPage, extractMdTitle } from './markdown.ts'
 import { faviconResponse } from './favicon.ts'
 import { parseOutline } from './compile/schema.ts'
 import { compileOutline } from './compile/compile.ts'
@@ -435,9 +440,22 @@ async function handleCreate(req: Request, env: Env): Promise<Response> {
   } catch {
     return json({ error: 'invalid JSON body' }, { status: 400 })
   }
-  const { doc, html: rawHtml, access } = (body as { doc?: unknown; html?: unknown; access?: unknown }) ?? {}
+  const { doc, html: rawHtml, md: rawMd, access } =
+    (body as { doc?: unknown; html?: unknown; md?: unknown; access?: unknown }) ?? {}
   if (access !== undefined && !isDeckAccess(access)) {
     return json({ error: `access must be one of: ${DECK_ACCESS_LEVELS.join(', ')}` }, { status: 422 })
+  }
+
+  if (typeof rawMd === 'string') {
+    if (!rawMd.trim()) return json({ error: 'md must not be empty' }, { status: 422 })
+    if (rawMd.length > MAX_HTML_DECK_BYTES) {
+      return json({ error: `md is ${rawMd.length} bytes, over the ${MAX_HTML_DECK_BYTES} limit` }, { status: 413 })
+    }
+    // Same as 'html': 'edit' is meaningless (nothing to edit in place), so
+    // it's coerced to 'view' rather than rejected.
+    const mdAccess: DeckAccess = access === 'edit' || access === undefined ? 'view' : access
+    const { id } = await createMdDeck(env, rawMd, extractMdTitle(rawMd), mdAccess)
+    return json({ id, url: `/d/${id}` }, { status: 201 })
   }
 
   if (typeof rawHtml === 'string') {
@@ -491,8 +509,9 @@ async function handleRename(req: Request, env: Env, id: string): Promise<Respons
   if (typeof title !== 'string' || !title.trim()) {
     return json({ error: 'title must be a non-empty string' }, { status: 422 })
   }
-  if (meta.kind === 'html') {
-    // No document to rewrite a title field inside of — just the D1 label.
+  if (meta.kind === 'html' || meta.kind === 'md') {
+    // No document to rewrite a title field inside of — just the D1 label
+    // (the same one-line UPDATE serves both opaque-source kinds).
     await renameHtmlDeck(env, id, title.trim())
     return json({ ok: true })
   }
@@ -543,6 +562,11 @@ async function handleGetDoc(env: Env, id: string): Promise<Response> {
     if (htmlContent === null) return notFound()
     return json({ kind: 'html', html: htmlContent })
   }
+  if (meta.kind === 'md') {
+    const mdContent = await getDeckMd(env, id)
+    if (mdContent === null) return notFound()
+    return json({ kind: 'md', md: mdContent })
+  }
   const doc = await getDeckDoc(env, id)
   if (!doc) return notFound()
   return json({ kind: 'bento', doc })
@@ -557,7 +581,25 @@ async function handleReplace(req: Request, env: Env, id: string): Promise<Respon
   } catch {
     return json({ error: 'invalid JSON body' }, { status: 400 })
   }
-  const { doc, html: rawHtml } = (body as { doc?: unknown; html?: unknown }) ?? {}
+  const { doc, html: rawHtml, md: rawMd } = (body as { doc?: unknown; html?: unknown; md?: unknown }) ?? {}
+
+  if (meta.kind === 'md') {
+    // Same shape as the 'html' re-upload below: wholesale replacement of the
+    // source, title re-derived from the NEW file.
+    if (typeof rawMd !== 'string') {
+      return json({ error: "this deck is kind:'md' — PATCH it with { md }" }, { status: 400 })
+    }
+    if (!rawMd.trim()) return json({ error: 'md must not be empty' }, { status: 422 })
+    if (rawMd.length > MAX_HTML_DECK_BYTES) {
+      return json({ error: `md is ${rawMd.length} bytes, over the ${MAX_HTML_DECK_BYTES} limit` }, { status: 413 })
+    }
+    await replaceMdDeck(env, id, rawMd, extractMdTitle(rawMd))
+    return json({ ok: true })
+  }
+
+  if (typeof rawMd === 'string') {
+    return json({ error: `this deck is kind:'${meta.kind}' — PATCH it with { ${meta.kind === 'html' ? 'html' : 'doc'} }, not { md }` }, { status: 400 })
+  }
 
   if (meta.kind === 'html') {
     // The one edit path an 'html' deck DOES have: full re-upload, replacing
@@ -779,6 +821,24 @@ async function handleView(req: Request, env: Env, id: string, download: boolean)
     return html(htmlDeckWrapper(rawHtml, meta.title, id))
   }
 
+  if (meta.kind === 'md') {
+    const md = await getDeckMd(env, id)
+    if (md === null) return notFound()
+    if (download) {
+      // The original Markdown source, byte-for-byte — the rendered HTML is
+      // derived at view time and never stored, so this is the portable copy.
+      const filename = meta.title.replace(/[^\w.-]+/g, '_').slice(0, 80) || 'deck'
+      return new Response(md, {
+        headers: { 'content-type': 'text/markdown; charset=utf-8', 'content-disposition': `attachment; filename="${filename}.md"` },
+      })
+    }
+    // Rendered by markdown.ts (raw HTML in the source is escaped, never
+    // passed through) and STILL served through the sandboxed wrapper —
+    // defense in depth, and it gives the deck the same Download PDF control
+    // and full-viewport shell every 'html' deck gets.
+    return html(htmlDeckWrapper(renderMdPage(md), meta.title, id))
+  }
+
   const doc = await getDeckDoc(env, id)
   if (!doc) return notFound()
   // 'view' gets `readonly: true` spliced in instead of the plain doc — Bento's
@@ -834,6 +894,12 @@ async function handlePdf(req: Request, env: Env, id: string): Promise<Response> 
     const rawHtml = await getDeckHtml(env, id)
     if (rawHtml === null) return notFound()
     bytes = await renderHtmlDeckPdf(env, rawHtml)
+  } else if (meta.kind === 'md') {
+    const md = await getDeckMd(env, id)
+    if (md === null) return notFound()
+    // The rendered page carries its own print stylesheet (markdown.ts's
+    // PAGE_CSS) — same standard-pagination path any 'html' deck gets.
+    bytes = await renderHtmlDeckPdf(env, renderMdPage(md))
   } else {
     // The deck's OWN live URL — whatever a real viewer would see (editor or
     // player mode, per `access`) is exactly what gets rendered.

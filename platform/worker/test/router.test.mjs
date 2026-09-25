@@ -100,7 +100,7 @@ function makeD1() {
             decks.delete(id)
           } else if (sql.startsWith('INSERT INTO decks')) {
             const [id, title, created_at, updated_at, edit_token_hash, shell_version, doc_bytes, access, search_text] = boundArgs
-            const kind = sql.includes("'html',") ? 'html' : 'bento'
+            const kind = sql.includes("'html',") ? 'html' : sql.includes("'md',") ? 'md' : 'bento'
             decks.set(id, {
               id, title, created_at, updated_at, edit_token_hash, shell_version, doc_bytes, access, kind,
               pinned: 0, project_id: null, search_text,
@@ -2003,6 +2003,164 @@ await check('GET /api/search caps results at 10', async () => {
   )
   const { data } = await readBody(res)
   assert(data.decks.length === 10, `expected exactly 10 results, got ${data.decks.length}`)
+})
+
+// ——— 'md' decks: raw Markdown stored, rendered (never passed through) at view time
+const MD_SOURCE = '---\ntitle: "Front Matter Title"\n---\n\n# Roadmap 路线图\n\nSome **bold** text and a [link](https://example.com).\n\n<script>alert(1)</script>\n\n[bad](javascript:alert(1))\n\n| a | b |\n|---|---|\n| 1 | 2 |\n'
+let mdDeckId
+await check('POST /api/decks with {md} creates an md-kind deck, title from front matter, edit coerced to view', async () => {
+  const res = await worker.fetch(
+    new Request('https://platform.example/api/decks', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: ownerCookie },
+      body: JSON.stringify({ md: MD_SOURCE, access: 'edit' }),
+    }),
+    env,
+  )
+  const { data, text } = await readBody(res)
+  assert(res.status === 201, `expected 201, got ${res.status}: ${text}`)
+  mdDeckId = data.id
+  const listRes = await worker.fetch(new Request('https://platform.example/api/decks', { headers: { cookie: ownerCookie } }), env)
+  const listed = (await readBody(listRes)).data.decks.find((d) => d.id === mdDeckId)
+  assert(listed.kind === 'md', `expected kind md, got ${listed.kind}`)
+  assert(listed.access === 'view', `expected edit coerced to view, got ${listed.access}`)
+  assert(listed.title === 'Front Matter Title', `expected front-matter title, got ${listed.title}`)
+})
+
+await check('POST /api/decks rejects empty md', async () => {
+  const res = await worker.fetch(
+    new Request('https://platform.example/api/decks', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: ownerCookie },
+      body: JSON.stringify({ md: '   \n' }),
+    }),
+    env,
+  )
+  assert(res.status === 422, `expected 422, got ${res.status}`)
+})
+
+await check('GET /d/:id for an md deck serves the sandboxed wrapper around RENDERED html — raw html/js in the source is inert', async () => {
+  const res = await worker.fetch(new Request(`https://platform.example/d/${mdDeckId}`), env)
+  const { text } = await readBody(res)
+  assert(res.status === 200, `expected 200, got ${res.status}`)
+  assert(text.includes('sandbox='), 'md deck must be served through the sandboxed iframe wrapper')
+  assert(text.includes(`href="/d/${mdDeckId}/pdf"`), 'expected the Download PDF control, same as an html deck')
+  // srcdoc is attribute-escaped; unescape the entities to inspect the page inside it
+  const srcdoc = /srcdoc="([^"]*)"/.exec(text)?.[1]?.replace(/&quot;/g, '"').replace(/&amp;/g, '&') ?? ''
+  assert(srcdoc.includes('<h1 id="roadmap-路线图">Roadmap 路线图</h1>'), 'expected the rendered heading')
+  assert(srcdoc.includes('<strong>bold</strong>'), 'expected rendered emphasis')
+  assert(srcdoc.includes('<table>'), 'expected a rendered table')
+  assert(!srcdoc.includes('<script>alert(1)'), 'raw <script> from the source must never reach the page as markup')
+  assert(srcdoc.includes('&lt;script&gt;alert(1)&lt;/script&gt;'), 'raw <script> should be visible as escaped text')
+  assert(!/href="javascript:/i.test(srcdoc), 'javascript: link must not become a live href')
+  assert(!srcdoc.includes('title: "Front Matter Title"'), 'front matter must not be rendered')
+})
+
+await check('GET /d/:id/download for an md deck returns the exact original Markdown as an attachment', async () => {
+  const res = await worker.fetch(new Request(`https://platform.example/d/${mdDeckId}/download`), env)
+  const { text } = await readBody(res)
+  assert(res.status === 200, `expected 200, got ${res.status}`)
+  assert(text === MD_SOURCE, 'download must be byte-for-byte the uploaded source')
+  assert((res.headers.get('content-type') ?? '').startsWith('text/markdown'), 'expected text/markdown')
+  assert(res.headers.get('content-disposition')?.includes('.md"'), 'expected a .md filename')
+})
+
+await check('GET /api/decks/:id for an md deck returns { kind, md }', async () => {
+  const res = await worker.fetch(new Request(`https://platform.example/api/decks/${mdDeckId}`, { headers: { cookie: ownerCookie } }), env)
+  const { data } = await readBody(res)
+  assert(data.kind === 'md' && data.md === MD_SOURCE, 'expected the stored source back')
+})
+
+await check('PATCH /api/decks/:id with {md} re-uploads and re-derives the title; {html}/{doc} against an md deck is a 400', async () => {
+  const bad = await worker.fetch(
+    new Request(`https://platform.example/api/decks/${mdDeckId}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', cookie: ownerCookie },
+      body: JSON.stringify({ html: '<!doctype html><p>x</p>' }),
+    }),
+    env,
+  )
+  assert(bad.status === 400, `expected 400 for a kind mismatch, got ${bad.status}`)
+  const ok = await worker.fetch(
+    new Request(`https://platform.example/api/decks/${mdDeckId}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', cookie: ownerCookie },
+      body: JSON.stringify({ md: '# Second Version\n\nmarkdowndeckneedle' }),
+    }),
+    env,
+  )
+  assert(ok.status === 200, `expected 200, got ${ok.status}`)
+  const listRes = await worker.fetch(new Request('https://platform.example/api/decks', { headers: { cookie: ownerCookie } }), env)
+  const listed = (await readBody(listRes)).data.decks.find((d) => d.id === mdDeckId)
+  assert(listed.title === 'Second Version', `expected re-derived title, got ${listed.title}`)
+})
+
+await check('{md} against a bento or html deck is a 400, not a silent no-op', async () => {
+  // fresh decks — the shared fixtures are already deleted by earlier tests
+  const mk = async (body) => {
+    const r = await worker.fetch(
+      new Request('https://platform.example/api/decks', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie: ownerCookie },
+        body: JSON.stringify(body),
+      }),
+      env,
+    )
+    return (await readBody(r)).data.id
+  }
+  const freshBento = await mk({ doc: exampleDoc })
+  const freshHtml = await mk({ html: '<!doctype html><title>t</title><p>x</p>' })
+  for (const id of [freshBento, freshHtml]) {
+    const res = await worker.fetch(
+      new Request(`https://platform.example/api/decks/${id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json', cookie: ownerCookie },
+        body: JSON.stringify({ md: '# x' }),
+      }),
+      env,
+    )
+    assert(res.status === 400, `expected 400, got ${res.status}`)
+  }
+})
+
+await check('GET /api/search finds md content (syntax stripped), and rename touches only the label', async () => {
+  const found = await worker.fetch(new Request('https://platform.example/api/search?q=markdowndeckneedle', { headers: { cookie: ownerCookie } }), env)
+  assert((await readBody(found)).data.decks.some((d) => d.id === mdDeckId), 'expected the md deck in search results')
+  const rn = await worker.fetch(
+    new Request(`https://platform.example/api/decks/${mdDeckId}/title`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', cookie: ownerCookie },
+      body: JSON.stringify({ title: 'Renamed MD' }),
+    }),
+    env,
+  )
+  assert(rn.status === 200, `expected 200, got ${rn.status}`)
+  const dl = await worker.fetch(new Request(`https://platform.example/d/${mdDeckId}/download`), env)
+  assert((await readBody(dl)).text === '# Second Version\n\nmarkdowndeckneedle', 'rename must not touch the stored source')
+})
+
+await check('an md deck honors private/404 for anonymous viewers, on view, download and pdf alike', async () => {
+  const set = await worker.fetch(
+    new Request(`https://platform.example/api/decks/${mdDeckId}/access`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', cookie: ownerCookie },
+      body: JSON.stringify({ access: 'private' }),
+    }),
+    env,
+  )
+  assert(set.status === 200, `expected 200, got ${set.status}`)
+  for (const path of ['', '/download', '/pdf']) {
+    const res = await worker.fetch(new Request(`https://platform.example/d/${mdDeckId}${path}`), env)
+    assert(res.status === 404, `expected 404 for anonymous /d/:id${path}, got ${res.status}`)
+  }
+})
+
+await check('DELETE removes an md deck: row and stored source both gone', async () => {
+  const del = await worker.fetch(new Request(`https://platform.example/api/decks/${mdDeckId}`, { method: 'DELETE', headers: { cookie: ownerCookie } }), env)
+  assert(del.status === 200, `expected 200, got ${del.status}`)
+  assert(!env.DOCS._objects.has(`docs/${mdDeckId}/doc.md`), 'doc.md must be deleted from R2')
+  const gone = await worker.fetch(new Request(`https://platform.example/d/${mdDeckId}`, { headers: { cookie: ownerCookie } }), env)
+  assert(gone.status === 404, `expected 404 after delete, got ${gone.status}`)
 })
 
 await check('POST /api/logout ends the session, further owner requests are rejected', async () => {

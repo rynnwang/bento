@@ -32,7 +32,7 @@ import type { Env } from './env.ts'
 import { randomId, sha256Hex } from './ids.ts'
 import { SHELL_VERSION } from './splice.ts'
 import { hashSharePassword, type SharePasswordRecord } from './auth.ts'
-import { extractBentoSearchText, extractHtmlSearchText } from './searchText.ts'
+import { extractBentoSearchText, extractHtmlSearchText, extractMdSearchText } from './searchText.ts'
 
 /** Who can reach a deck without the owner's own session.
  *  - 'private' — nobody; handleView/handleAsset 404 exactly like an unknown
@@ -57,8 +57,13 @@ export const DECK_ACCESS_LEVELS: readonly DeckAccess[] = ['private', 'view', 'ed
  *    asked directly for "a runnable HTML slide deck", not through Bento at
  *    all). Stored and served byte-for-byte, never parsed or edited — see
  *    index.ts's handleView for why it's served through a sandboxed iframe
- *    wrapper rather than directly at the platform's own origin. */
-export type DeckKind = 'bento' | 'html'
+ *    wrapper rather than directly at the platform's own origin.
+ *  - 'md'    — a Markdown file, stored as raw source and rendered to HTML at
+ *    view time (markdown.ts — raw HTML in the source is escaped, never
+ *    passed through). Same view-only/no-edit treatment as 'html'; served
+ *    through the same sandboxed wrapper and rendered to PDF through the
+ *    same html path. */
+export type DeckKind = 'bento' | 'html' | 'md'
 
 export interface DeckMeta {
   id: string
@@ -100,6 +105,10 @@ function deckDocKey(id: string): string {
 
 function deckHtmlKey(id: string): string {
   return `docs/${id}/doc.html`
+}
+
+function deckMdKey(id: string): string {
+  return `docs/${id}/doc.md`
 }
 
 function titleOf(doc: Record<string, unknown>): string {
@@ -166,6 +175,30 @@ export async function createHtmlDeck(
   return { id }
 }
 
+/** Create a new 'md' deck: raw Markdown source stored byte-for-byte (the
+ *  rendered HTML is derived at view time, never stored — so a renderer
+ *  improvement reaches every existing deck). Same access rule as
+ *  createHtmlDeck: the caller has already coerced 'edit' to 'view'. */
+export async function createMdDeck(
+  env: Env,
+  md: string,
+  title: string,
+  access: DeckAccess = 'view',
+): Promise<CreateResult> {
+  const id = randomId()
+  const now = Date.now()
+
+  await env.DOCS.put(deckMdKey(id), md, { httpMetadata: { contentType: 'text/markdown; charset=utf-8' } })
+  await env.DB.prepare(
+    `INSERT INTO decks (id, title, created_at, updated_at, edit_token_hash, shell_version, doc_bytes, access, kind, search_text)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'md', ?)`,
+  )
+    .bind(id, clampTitle(title), now, now, '', SHELL_VERSION, md.length, access, extractMdSearchText(md))
+    .run()
+
+  return { id }
+}
+
 export async function getDeckDoc(env: Env, id: string): Promise<unknown | null> {
   const obj = await env.DOCS.get(deckDocKey(id))
   if (!obj) return null
@@ -175,6 +208,13 @@ export async function getDeckDoc(env: Env, id: string): Promise<unknown | null> 
 /** Raw bytes of an 'html' deck — never parsed, served as-is. */
 export async function getDeckHtml(env: Env, id: string): Promise<string | null> {
   const obj = await env.DOCS.get(deckHtmlKey(id))
+  if (!obj) return null
+  return obj.text()
+}
+
+/** Raw Markdown source of an 'md' deck. */
+export async function getDeckMd(env: Env, id: string): Promise<string | null> {
+  const obj = await env.DOCS.get(deckMdKey(id))
   if (!obj) return null
   return obj.text()
 }
@@ -366,6 +406,15 @@ export async function replaceHtmlDeck(env: Env, id: string, html: string, title:
     .run()
 }
 
+/** Overwrite an 'md' deck's source in place — same re-upload path and same
+ *  title re-derivation rule as replaceHtmlDeck. */
+export async function replaceMdDeck(env: Env, id: string, md: string, title: string): Promise<void> {
+  await env.DOCS.put(deckMdKey(id), md, { httpMetadata: { contentType: 'text/markdown; charset=utf-8' } })
+  await env.DB.prepare(`UPDATE decks SET title = ?, updated_at = ?, doc_bytes = ?, search_text = ? WHERE id = ?`)
+    .bind(clampTitle(title), Date.now(), md.length, extractMdSearchText(md), id)
+    .run()
+}
+
 /** Permanently delete a deck: its D1 row, its stored bytes (doc.json OR
  *  doc.html — deleting both unconditionally is simpler and no less correct
  *  than branching on kind, since only one of them was ever written), and
@@ -387,6 +436,7 @@ export async function deleteDeck(env: Env, id: string): Promise<void> {
   } while (cursor)
   await env.DOCS.delete(deckDocKey(id))
   await env.DOCS.delete(deckHtmlKey(id))
+  await env.DOCS.delete(deckMdKey(id))
   await env.DB.prepare(`DELETE FROM decks WHERE id = ?`).bind(id).run()
 }
 

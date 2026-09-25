@@ -305,6 +305,28 @@ Current feature set, all owner-only except where noted:
   build a `Blob`/`URL.createObjectURL` download on success and restore the
   button after a short delay either way (success or failure) so a repeat
   click always works.
+- **`kind:'md'` decks (2026-09-25)** — a Markdown file: `POST /api/decks`
+  `{ md }`, raw source stored at `docs/<id>/doc.md` and rendered to HTML at
+  VIEW time by `platform/worker/src/markdown.ts` (never stored, so a
+  renderer improvement reaches every existing deck; the original `.md`
+  downloads byte-for-byte). The renderer is in-house and zero-dependency —
+  a CommonMark/GFM subset (headings, emphasis, lists incl. nested/task,
+  tables, fenced code, quotes, links/images, front-matter `title:`) that is
+  **safe by construction: raw HTML in the source is ALWAYS escaped, link/
+  image URLs are scheme-allow-listed, fence languages sanitized** — so an
+  `md` deck can never carry script (that's what `'html'` is for). Served
+  through the SAME sandboxed wrapper as an `'html'` deck and PDF'd through
+  the same html path (the page's `PAGE_CSS` has its own print stylesheet).
+  `'edit'` access is coerced to `'view'`; rename/re-upload/download/search/
+  delete mirror `'html'`. **The create page's Step 2 is now ONE box**
+  (paste, drop a file, or Upload file…) with client-side format detection
+  (`demo.ts`'s `detectFormat`, shown live as a "Detected: …" chip): outline
+  JSON / `bento/slides` doc / HTML page / Markdown — a `{`-leading reply
+  that fails to parse is an ERROR (not silently a Markdown deck, unless the
+  file is `.md`). The server stays authoritative by request key
+  (`doc`/`html`/`md`) and does not sniff. Not supported: reference links,
+  footnotes, raw HTML blocks, relative images (no asset store). Rationale:
+  `docs/DECISIONS.md` 2026-09-25.
 - **`kind:'html'` decks** — a second, deliberately opaque deck kind
   alongside the compiled `'bento'` kind: a complete, self-running HTML slide
   deck some AIs will generate directly if asked (no `bento/slides` JSON at
