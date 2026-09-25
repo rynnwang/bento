@@ -526,7 +526,10 @@ await check('GET /d/:id/pdf serves a cached render directly, without touching Br
   const { text } = await readBody(res)
   assert(res.status === 200, `expected 200, got ${res.status}: ${text}`)
   assert(res.headers.get('content-type') === 'application/pdf', 'expected an application/pdf content-type')
-  assert(res.headers.get('content-disposition')?.includes('attachment'), 'expected an attachment disposition')
+  const cd = res.headers.get('content-disposition') ?? ''
+  assert(cd.includes('attachment'), 'expected an attachment disposition')
+  assert(/filename="[^"]+-\d{8}-\d{6}\.pdf"/.test(cd), `expected {name}-{YYYYMMDD-HHmmss}.pdf, got ${cd}`)
+  assert(/filename\*=UTF-8''[^;]+-\d{8}-\d{6}\.pdf$/.test(cd), `expected a UTF-8 filename*, got ${cd}`)
   assert(text === '%PDF-1.7 fake cached bytes', 'expected the exact cached bytes back, not a fresh render')
 })
 
