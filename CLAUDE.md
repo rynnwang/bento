@@ -327,6 +327,15 @@ Current feature set, all owner-only except where noted:
   (`doc`/`html`/`md`) and does not sniff. Not supported: reference links,
   footnotes, raw HTML blocks, relative images (no asset store). Rationale:
   `docs/DECISIONS.md` 2026-09-25.
+- **Web clipper (2026-09-25)** — `POST /api/decks {url}`
+  (`platform/worker/src/webclip.ts`): fetches a public page, extracts the
+  article (Readability-style, in-house — Workers have no DOM), converts to
+  Markdown with links/images kept ONLINE (absolute URLs), stores it as an
+  ordinary `'md'` deck (no new kind; "Source:" line under the title). The
+  create box treats a lone http(s) URL as this. Guarded: http(s) only, no
+  private/loopback hosts, manual redirects re-validated per hop, 15s/5MB caps,
+  owner-only. JS-rendered/paywalled pages error out (422) rather than save a
+  blank deck. Rationale: `docs/DECISIONS.md` 2026-09-25 (web clipper).
 - **`kind:'html'` decks** — a second, deliberately opaque deck kind
   alongside the compiled `'bento'` kind: a complete, self-running HTML slide
   deck some AIs will generate directly if asked (no `bento/slides` JSON at

@@ -235,6 +235,10 @@ deck is for. It's served through the same sandboxed iframe wrapper as an
 (`'edit'` → `'view'`), and PDFs through the same server-side html path.
 See `docs/DECISIONS.md` 2026-09-25.
 
+### Web clips
+
+Paste a lone URL into the same box and the Worker fetches the page, extracts the article and stores it as an `md` deck (`POST /api/decks {url}`; owner-only). Links and images are made absolute and stay online; a "Source:" line and clip date sit under the title. Public http(s) only (redirects re-validated, 5 MB / 15 s caps). JS-rendered, login- or paywalled pages return an error instead of a blank deck. Details: `docs/DECISIONS.md` 2026-09-25 (web clipper).
+
 ## Sidebar: pinning, resizing, and a real preview panel
 
 - **Pin** (`migrations/0006_pinned.sql`'s `decks.pinned`, `PATCH

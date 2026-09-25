@@ -2166,6 +2166,91 @@ await check('DELETE removes an md deck: row and stored source both gone', async 
   assert(gone.status === 404, `expected 404 after delete, got ${gone.status}`)
 })
 
+// ——— web clip: POST /api/decks {url} fetches + converts to an 'md' deck
+const clipPost = (body) =>
+  worker.fetch(
+    new Request('https://platform.example/api/decks', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: ownerCookie },
+      body: JSON.stringify(body),
+    }),
+    env,
+  )
+const CLIP_HTML = `<html><head><title>Clipped Story</title></head><body><nav>NAVJUNK</nav><article><h1>Clipped Story</h1><p>${'Genuine article sentence, with commas and enough words to count. '.repeat(8)}</p><img src="/pic.png" alt="pic"><p>${'More genuine article sentence, with commas and words. '.repeat(6)}</p></article></body></html>`
+const realFetch = globalThis.fetch
+let clipDeckId
+await check('POST /api/decks {url} clips the page into an md deck (media stays online)', async () => {
+  const seen = []
+  globalThis.fetch = async (u) => {
+    seen.push(String(u))
+    return new Response(CLIP_HTML, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } })
+  }
+  try {
+    const res = await clipPost({ url: 'https://news.example.com/a/b?x=1', access: 'edit' })
+    const { data, text } = await readBody(res)
+    assert(res.status === 201, `expected 201, got ${res.status}: ${text}`)
+    assert(data.title === 'Clipped Story', `title: ${data.title}`)
+    assert(seen.length === 1 && seen[0] === 'https://news.example.com/a/b?x=1', `fetched: ${seen}`)
+    clipDeckId = data.id
+    const md = new TextDecoder().decode(env.DOCS._objects.get(`docs/${clipDeckId}/doc.md`).bytes)
+    assert(md.includes('![pic](https://news.example.com/pic.png)'), `md: ${md.slice(0, 300)}`)
+    assert(md.includes('Source: [news.example.com]'), 'source line missing')
+    assert(!md.includes('NAVJUNK'), 'nav leaked into the clip')
+    const listed = (await readBody(await worker.fetch(new Request('https://platform.example/api/decks', { headers: { cookie: ownerCookie } }), env))).data.decks.find((d) => d.id === clipDeckId)
+    assert(listed.kind === 'md' && listed.access === 'view', `kind/access: ${listed.kind}/${listed.access}`)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+await check('POST /api/decks {url} rejects bad / private URLs without fetching, and non-HTML / HTTP errors cleanly', async () => {
+  let calls = 0
+  globalThis.fetch = async () => {
+    calls++
+    return new Response('%PDF', { status: 200, headers: { 'content-type': 'application/pdf' } })
+  }
+  try {
+    for (const bad of ['nonsense', 'file:///etc/passwd', 'http://localhost/x', 'http://192.168.0.1/', 'https://platform.example/d/abc']) {
+      const r = await clipPost({ url: bad })
+      assert(r.status === 422, `${bad}: expected 422, got ${r.status}`)
+    }
+    assert(calls === 0, 'must not fetch a rejected URL')
+    const pdf = await clipPost({ url: 'https://files.example.com/a.pdf' })
+    assert(pdf.status === 415, `pdf: expected 415, got ${pdf.status}`)
+    globalThis.fetch = async () => new Response('nope', { status: 403 })
+    const denied = await clipPost({ url: 'https://blocked.example.com/' })
+    assert(denied.status === 502, `403 site: expected 502, got ${denied.status}`)
+    globalThis.fetch = async () => new Response('<html><body><div id="root"></div></body></html>', { status: 200, headers: { 'content-type': 'text/html' } })
+    const spa = await clipPost({ url: 'https://spa.example.com/' })
+    assert(spa.status === 422, `spa: expected 422, got ${spa.status}`)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+await check('POST /api/decks {url} follows redirects but re-validates each hop', async () => {
+  let n = 0
+  globalThis.fetch = async () => {
+    n++
+    return new Response(null, { status: 302, headers: { location: 'http://127.0.0.1/admin' } })
+  }
+  try {
+    const r = await clipPost({ url: 'https://redir.example.com/' })
+    assert(r.status === 422, `expected 422 for a redirect to loopback, got ${r.status}`)
+    assert(n === 1, `should stop at the first hop, fetched ${n}`)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+await check('POST /api/decks {url} requires the owner session', async () => {
+  const r = await worker.fetch(
+    new Request('https://platform.example/api/decks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: 'https://example.com/' }) }),
+    env,
+  )
+  assert(r.status === 401, `expected 401, got ${r.status}`)
+})
+
 await check('POST /api/logout ends the session, further owner requests are rejected', async () => {
   const logoutRes = await worker.fetch(
     new Request('https://platform.example/api/logout', { method: 'POST', headers: { cookie: ownerCookie } }),
