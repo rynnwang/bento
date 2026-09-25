@@ -548,25 +548,43 @@ function charsetOf(contentType: string, head: Uint8Array): string {
   return /<meta[^>]+charset\s*=\s*["']?([\w-]+)/i.exec(sniff)?.[1] ?? 'utf-8'
 }
 
-export async function clipUrl(raw: string, selfHost?: string): Promise<Clip & { url: string }> {
-  let url = validateClipUrl(raw, selfHost)
-  let res: Response | null = null
-  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+/** Header sets tried in order. Many sites (WAFs, ModSecurity rules) 403 anything that
+ *  announces itself as a bot, yet serve the same PUBLIC page to an ordinary
+ *  browser request — so a plain browser-like profile goes first and other
+ *  browser profiles are only tried after a block-style status. We never
+ *  impersonate a search-engine crawler, and never try to defeat a captcha or
+ *  login: a site that still refuses is reported as such. */
+const PROFILES: Record<string, string>[] = [
+  {
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+    accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,text/markdown;q=0.8,*/*;q=0.7',
+    'accept-language': 'en-US,en;q=0.9,zh-CN;q=0.8',
+    'upgrade-insecure-requests': '1',
+  },
+  {
+    'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:128.0) Gecko/20100101 Firefox/128.0',
+    accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'accept-language': 'en-US,en;q=0.5',
+  },
+  {
+    'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+    accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'accept-language': 'en-US,en;q=0.9',
+  },
+]
+const RETRY_STATUSES = new Set([401, 403, 406, 429, 451])
+
+async function fetchFollow(start: URL, headers: Record<string, string>, selfHost?: string): Promise<{ res: Response; url: URL }> {
+  let url = start
+  for (let hop = 0; ; hop++) {
+    let res: Response
     try {
-      res = await fetch(url.href, {
-        redirect: 'manual',
-        headers: {
-          'user-agent': 'Mozilla/5.0 (compatible; BentoClipper/1.0; +https://ppt.rynnwang.com)',
-          accept: 'text/html,application/xhtml+xml,text/markdown,text/plain;q=0.8',
-          'accept-language': 'en,zh;q=0.8,*;q=0.5',
-        },
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-      })
+      res = await fetch(url.href, { redirect: 'manual', headers, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
     } catch {
       throw new ClipError("Couldn't reach that page (timed out or refused the connection).", 502)
     }
     if (res.status >= 300 && res.status < 400 && res.headers.get('location')) {
-      if (hop === MAX_REDIRECTS) throw new ClipError('Too many redirects.', 502)
+      if (hop >= MAX_REDIRECTS) throw new ClipError('Too many redirects.', 502)
       try {
         url = validateClipUrl(new URL(res.headers.get('location')!, url).href, selfHost)
       } catch (e) {
@@ -574,10 +592,21 @@ export async function clipUrl(raw: string, selfHost?: string): Promise<Clip & { 
       }
       continue
     }
-    break
+    return { res, url }
+  }
+}
+
+export async function clipUrl(raw: string, selfHost?: string): Promise<Clip & { url: string }> {
+  const start = validateClipUrl(raw, selfHost)
+  let res: Response | null = null
+  let url = start
+  for (const profile of PROFILES) {
+    ;({ res, url } = await fetchFollow(start, profile, selfHost))
+    if (!RETRY_STATUSES.has(res.status)) break
+    await res.body?.cancel()
   }
   if (!res) throw new ClipError("Couldn't fetch that page.", 502)
-  if (!res.ok) throw new ClipError(`The site answered HTTP ${res.status}${res.status === 403 || res.status === 401 ? ' (it blocks automated fetches or needs a login)' : ''}.`, 502)
+  if (!res.ok) throw new ClipError(`The site answered HTTP ${res.status}${RETRY_STATUSES.has(res.status) ? ' (it blocks automated fetches, or the page needs a login)' : ''}.`, 502)
   const ctype = res.headers.get('content-type') ?? ''
   const isHtml = /html|xml/i.test(ctype) || ctype === ''
   const isText = /^text\/(plain|markdown)/i.test(ctype)
