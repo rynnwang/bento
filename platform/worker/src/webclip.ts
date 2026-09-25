@@ -180,6 +180,9 @@ function isNoise(e: El): boolean {
   if (e.tag === 'header' && !e.parent?.tag.match(/^(article|main|section)$/)) return true
   const role = e.attrs.role
   if (role && /^(navigation|banner|contentinfo|complementary|search|dialog)$/.test(role)) return true
+  // page-level wrappers often carry state classes ("comment_feature", "menu-open")
+  // that would veto the whole page — never judge them by class
+  if (e.tag === 'body' || e.tag === 'html' || e.tag === 'main' || e.tag === 'article') return false
   const cls = `${e.attrs.class ?? ''} ${e.attrs.id ?? ''}`
   if (cls.trim() && NOISE_RE.test(cls) && !/(^|[\s_-])(article|content|post|entry|story|main|body)([\s_-]|$)/i.test(cls)) return true
   return false

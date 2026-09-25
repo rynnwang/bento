@@ -124,6 +124,11 @@ check('a page with no article tag falls back to the densest text block', () => {
   lacks(c.md, 'menu2')
 })
 
+check('state classes on <body> (e.g. WeChat "comment_feature") never veto the whole page', () => {
+  const c = htmlToClip(`<html><body class="wx comment_feature menu-open"><div id="js_content" style="visibility:hidden"><section><p>${filler}</p><p>${filler}</p></section></div></body></html>`, 'https://mp.weixin.qq.com/s/x')
+  has(c.md, 'genuine article text')
+})
+
 check('JS-only / empty pages are reported, not saved as blank decks', () => {
   let msg = ''
   try {
