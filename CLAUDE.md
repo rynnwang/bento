@@ -336,6 +336,9 @@ Current feature set, all owner-only except where noted:
   private/loopback hosts, manual redirects re-validated per hop, 15s/5MB caps,
   owner-only. JS-rendered/paywalled pages error out (422) rather than save a
   blank deck. Rationale: `docs/DECISIONS.md` 2026-09-25 (web clipper).
+  After extraction an OPTIONAL Workers AI pass (`clipclean.ts`, `[ai]` binding, free
+  tier) picks boilerplate BLOCKS to delete — the model never writes text, only
+  returns block numbers; any failure keeps the heuristic clip.
 - **`kind:'html'` decks** — a second, deliberately opaque deck kind
   alongside the compiled `'bento'` kind: a complete, self-running HTML slide
   deck some AIs will generate directly if asked (no `bento/slides` JSON at
