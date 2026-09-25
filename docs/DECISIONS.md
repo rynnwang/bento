@@ -8213,3 +8213,36 @@ assistive tech. The arrows Chrome does stretch stay font glyphs. The tree
 rigs treat a drawn arrow as a deliberate difference: named in
 `test-maths-lite.ts`, counted with the identical ones in the coverage floor.
 Cost: +966 B of shell.
+
+## 2026-09-25 — Limited text editing for html/md decks (splice one element, never restructure)
+
+Owner-only "✎ Edit text" on an `'html'`/`'md'` deck's live view: double-click a
+leaf text element (headings, p, li, td/th, dt/dd, captions, and leaf div/span),
+edit its text, click away to save. **Rule: the text inside ONE element may change,
+plus b/i/u/s/br formatting; nothing about structure, attributes, colours or
+styles.** Implementation (`textedit.ts`, `textEditClient.ts`, `PATCH
+/api/decks/:id/text`):
+- The browser sends only `{tag, oldText, nth, html}`; the SERVER re-finds the
+  element in the stored SOURCE by tag + normalized text (nth among identical
+  ones) and splices its inner content — every other byte is untouched, so an
+  HTML deck's scripts/CSS survive verbatim. Client offsets are never trusted.
+- New inner HTML is validated, not sanitized-and-hoped: balanced fragment, no
+  comments/stray end tags, and every tag must be an attribute-less
+  formatting tag or one that already existed inside that element with IDENTICAL
+  attributes (so an existing link/span survives an edit, a new colour span or
+  onclick cannot appear). Elements with non-inline children are refused.
+- Text produced by page JS isn't in the source → not found → refused with an
+  explanation (no DOM-diffing heuristics). Elements closed only implicitly
+  (`<li>` without `</li>`) have no known end offset and are refused.
+- Markdown: the same protocol, but the source line is found by rendering each
+  block (headings, paragraphs, single-line list items) and comparing text; the
+  edited HTML is converted back to inline Markdown with everything typed
+  escaped, so an edit can never create structure. Quotes, tables, setext
+  headings, fenced code are counted (for `nth`) but not editable. Needed a
+  one-line renderer fix: a backslash-escaped backtick no longer opens a code
+  span. Editing normalizes a CRLF source to LF; a derived title follows an
+  edited first heading, a renamed one stays.
+- Optimistic concurrency: the page carries `updated_at`; a stale PATCH is 409.
+  The edit bumps `updated_at`, so the cached PDF regenerates.
+- Non-goals: adding/removing/moving blocks, colours, images, table structure,
+  editing JS-generated text, rich paste (paste is forced to plain text).

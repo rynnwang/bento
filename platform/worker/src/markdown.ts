@@ -58,8 +58,10 @@ export function renderInline(src: string): string {
   const hold = (html: string): string => `\u0000${stash.push(html) - 1}\u0000`
   let s = src.replace(/\u0000/g, '')
 
-  // code spans — longest-run matching, contents escaped verbatim
-  s = s.replace(/(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)/g, (_m, _ticks: string, body: string) => {
+  // code spans — longest-run matching, contents escaped verbatim; a backslash-
+  // escaped backtick never opens one (textedit.ts relies on that to write a
+  // literal backtick)
+  s = s.replace(/(?<!\\)(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)/g, (_m, _ticks: string, body: string) => {
     let code = body.replace(/\n/g, ' ')
     if (/^ .* $/.test(code) && code.trim()) code = code.slice(1, -1)
     return hold(`<code>${escapeHtml(code)}</code>`)
