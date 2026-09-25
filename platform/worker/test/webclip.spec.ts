@@ -4,7 +4,7 @@
 // Unit assertions for webclip.ts — URL -> Markdown. The converted output is fed
 // straight into the 'md' renderer, so the round-trip cases matter as much as the
 // conversion itself: nothing a hostile page contains may become live markup.
-import { htmlToClip, parseHtml, validateClipUrl, decodeEntities } from '../src/webclip.ts'
+import { htmlToClip, parseHtml, validateClipUrl, decodeEntities, clipUrl } from '../src/webclip.ts'
 import { renderMarkdown } from '../src/markdown.ts'
 import { splitBlocks, parseDrop, aiCleanClip } from '../src/clipclean.ts'
 
@@ -170,6 +170,17 @@ const MDDOC = ["# T",
   "Real paragraph two that is also long enough.",
   "© 2026 Footer text"].join('\n\n')
 
+const CHALLENGE = '<html><head><meta http-equiv="refresh" content="0;/.well-known/sgcaptcha/?r=x"></head><body></body></html>'
+const withFetch = async (impl: () => Response, fn: () => Promise<void>) => {
+  const real = globalThis.fetch
+  globalThis.fetch = (async () => impl()) as typeof fetch
+  try {
+    await fn()
+  } finally {
+    globalThis.fetch = real
+  }
+}
+
 async function cleanCheck(name: string, fn: () => Promise<void>): Promise<void> {
   try {
     await fn()
@@ -191,6 +202,38 @@ check('parseDrop: tolerant of shapes, ignores head/out-of-range/garbage', () => 
   assert([...(parseDrop({ response: { drop: [3] } }, 7) ?? [])].join() === '3', 'object reply')
   assert(parseDrop('no json here', 7) === null, 'no json')
   assert(parseDrop('{"nope":1}', 7) === null, 'wrong shape')
+})
+
+await cleanCheck('clipUrl: a bot-check interstitial falls back to the browser renderer, once', async () => {
+  let renders = 0
+  await withFetch(() => new Response(CHALLENGE, { status: 202, headers: { 'content-type': 'text/html' } }), async () => {
+    const c = await clipUrl('https://guarded.example.com/a', undefined, async (u) => {
+      renders++
+      return { html: PAGE, url: u }
+    })
+    assert(c.title === 'A Great Article' && renders === 1, `title=${c.title} renders=${renders}`)
+  })
+})
+
+await cleanCheck('clipUrl: no renderer → the plain error; a fine page never touches the renderer', async () => {
+  await withFetch(() => new Response(CHALLENGE, { status: 202, headers: { 'content-type': 'text/html' } }), async () => {
+    let msg = ''
+    try { await clipUrl('https://guarded.example.com/a') } catch (e) { msg = (e as Error).message }
+    assert(/bot-check/.test(msg), msg)
+  })
+  let renders = 0
+  await withFetch(() => new Response(PAGE, { status: 200, headers: { 'content-type': 'text/html' } }), async () => {
+    await clipUrl('https://fine.example.com/a', undefined, async (u) => { renders++; return { html: '', url: u } })
+    assert(renders === 0, 'renderer used unnecessarily')
+  })
+})
+
+await cleanCheck('clipUrl: challenge that persists in the browser is reported with the upload-it-yourself hint', async () => {
+  await withFetch(() => new Response('blocked', { status: 403 }), async () => {
+    let msg = ''
+    try { await clipUrl('https://wall.example.com/a', undefined, async (u) => ({ html: CHALLENGE, url: u })) } catch (e) { msg = (e as Error).message }
+    assert(/captcha/.test(msg) && /upload/.test(msg), msg)
+  })
 })
 
 await cleanCheck('aiCleanClip removes only the named blocks, deterministically', async () => {

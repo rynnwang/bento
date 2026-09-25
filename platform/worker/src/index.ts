@@ -137,6 +137,7 @@ import { renderBentoDeckPdf, renderHtmlDeckPdf, PDF_RENDER_VERSION } from './pdf
 import { renderMdPage, extractMdTitle } from './markdown.ts'
 import { clipUrl, ClipError } from './webclip.ts'
 import { aiCleanClip } from './clipclean.ts'
+import { makeBrowserRender } from './clipBrowser.ts'
 import { faviconResponse } from './favicon.ts'
 import { parseOutline } from './compile/schema.ts'
 import { compileOutline } from './compile/compile.ts'
@@ -454,7 +455,7 @@ async function handleCreate(req: Request, env: Env): Promise<Response> {
   // stay online), store as an ordinary 'md' deck. See webclip.ts.
   if (typeof rawUrl === 'string') {
     try {
-      const clip = await clipUrl(rawUrl, new URL(req.url).hostname)
+      const clip = await clipUrl(rawUrl, new URL(req.url).hostname, makeBrowserRender(env))
       clip.md = (await aiCleanClip(env.AI, clip.md)).md
       if (clip.md.length > MAX_HTML_DECK_BYTES) return json({ error: 'clipped page is too large' }, { status: 413 })
       const clipAccess: DeckAccess = access === 'edit' || access === undefined ? 'view' : access
