@@ -7142,3 +7142,16 @@ in the text itself (a "Source:" line under the title) rather than a column.
 - **UI**: the create box's format detection treats a lone http(s) URL (no
   filename) as `url`. Tests: `test/webclip.spec.ts` + router `{url}` checks
   with a stubbed `fetch`.
+
+## 2026-09-25 — Web clipper: browser-like request headers, not a bot UA
+
+The clipper first announced itself as `BentoClipper/1.0`; a real page
+(foresttherapyhub.com) answered that with a WAF 403 yet served the identical
+public HTML to any ordinary browser UA. `webclip.ts` now sends a plain
+desktop-Chrome header set first, and only after a block-style status
+(401/403/406/429/451) retries with a Firefox, then a mobile-Safari profile.
+Deliberately NOT done: impersonating a search-engine crawler, defeating
+captchas/JS challenges, or routing URLs through a third-party reader/archive
+(privacy). A site that still refuses is reported as blocked. Also fixed the same
+day: `<body>` state classes (e.g. WeChat's `comment_feature`) no longer count as
+page noise.
