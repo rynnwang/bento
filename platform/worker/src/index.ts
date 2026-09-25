@@ -135,6 +135,7 @@ import { renderSetupPage, renderLoginPage } from './authPages.ts'
 import { renderDeckPasswordGate } from './sharePage.ts'
 import { renderBentoDeckPdf, renderHtmlDeckPdf, PDF_RENDER_VERSION } from './pdf.ts'
 import { renderMdPage, extractMdTitle } from './markdown.ts'
+import { clipUrl, ClipError } from './webclip.ts'
 import { faviconResponse } from './favicon.ts'
 import { parseOutline } from './compile/schema.ts'
 import { compileOutline } from './compile/compile.ts'
@@ -442,10 +443,25 @@ async function handleCreate(req: Request, env: Env): Promise<Response> {
   } catch {
     return json({ error: 'invalid JSON body' }, { status: 400 })
   }
-  const { doc, html: rawHtml, md: rawMd, access } =
-    (body as { doc?: unknown; html?: unknown; md?: unknown; access?: unknown }) ?? {}
+  const { doc, html: rawHtml, md: rawMd, url: rawUrl, access } =
+    (body as { doc?: unknown; html?: unknown; md?: unknown; url?: unknown; access?: unknown }) ?? {}
   if (access !== undefined && !isDeckAccess(access)) {
     return json({ error: `access must be one of: ${DECK_ACCESS_LEVELS.join(', ')}` }, { status: 422 })
+  }
+
+  // Web clip: fetch the page server-side, convert to Markdown (images/links
+  // stay online), store as an ordinary 'md' deck. See webclip.ts.
+  if (typeof rawUrl === 'string') {
+    try {
+      const clip = await clipUrl(rawUrl, new URL(req.url).hostname)
+      if (clip.md.length > MAX_HTML_DECK_BYTES) return json({ error: 'clipped page is too large' }, { status: 413 })
+      const clipAccess: DeckAccess = access === 'edit' || access === undefined ? 'view' : access
+      const { id } = await createMdDeck(env, clip.md, clip.title, clipAccess)
+      return json({ id, url: `/d/${id}`, title: clip.title }, { status: 201 })
+    } catch (e) {
+      if (e instanceof ClipError) return json({ error: e.message }, { status: e.status })
+      throw e
+    }
   }
 
   if (typeof rawMd === 'string') {

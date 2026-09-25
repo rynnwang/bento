@@ -737,9 +737,10 @@ ${PAGE_STYLES}
           <li><strong>A <code>bento/slides</code> document</strong> (advanced) — stored as-is, editable</li>
           <li><strong>A complete HTML page</strong> (<code>&lt;!doctype html&gt;</code>…) — stored and served as-is</li>
           <li><strong>Markdown</strong> (<code>.md</code>) — rendered as a clean web page; keeps your source</li>
+          <li><strong>A web page URL</strong> (just paste the link) — we fetch the article and save it as Markdown; images stay online</li>
         </ul>
         <p class="hint">HTML and Markdown decks are always view-only for anyone but you.</p>
-        <textarea id="input" spellcheck="false" placeholder="Paste outline JSON, a bento/slides document, an HTML page, or Markdown — or drop a file here"></textarea>
+        <textarea id="input" spellcheck="false" placeholder="Paste outline JSON, a bento/slides document, an HTML page, Markdown, or a web page URL — or drop a file here"></textarea>
         <div id="detected" class="detected" aria-live="polite"></div>
         <div class="access-field">
           <label for="accessSelect">Who can open this deck's link? (changeable anytime from the sidebar's ⚙️)</label>
@@ -1614,6 +1615,8 @@ function detectFormat(raw, filename) {
   } else if (ext === 'json') {
     return { kind: 'bad-json', error: 'expected a JSON object ({ … })' }
   }
+  // A lone http(s) URL (nothing else in the box) is a web clip request.
+  if (!filename && /^https?:\\/\\/[^\\s]+$/i.test(trimmed)) return { kind: 'url', url: trimmed }
   if (looksLikeHtmlDocument(text) || ext === 'html' || ext === 'htm') return { kind: 'html' }
   return { kind: 'md' }
 }
@@ -1622,6 +1625,7 @@ const FORMAT_LABELS = {
   'bento-doc': 'bento/slides document — stored as-is, editable',
   'html': 'HTML page — stored and served as-is (view only)',
   'md': 'Markdown — will be rendered as a web page (view only)',
+  'url': 'Web page URL — we will fetch it and save a Markdown copy (images stay online, view only)',
 }
 function afterInputChanged() {
   const chip = document.getElementById('detected')
@@ -1638,7 +1642,7 @@ function afterInputChanged() {
   // HTML and Markdown have no in-place edit mode — 'edit' would just get
   // coerced to 'view' server-side, so reflect that instead of leaving a
   // misleading selection showing.
-  if (d.kind === 'html' || d.kind === 'md') {
+  if (d.kind === 'html' || d.kind === 'md' || d.kind === 'url') {
     const accessSelect = document.getElementById('accessSelect')
     if (accessSelect.value === 'edit') accessSelect.value = 'view'
   }
@@ -1726,6 +1730,10 @@ document.getElementById('create').onclick = async () => {
   } else if (detected.kind === 'html') {
     isSourceDeck = true
     requestBody = { html: raw }
+  } else if (detected.kind === 'url') {
+    isSourceDeck = true
+    requestBody = { url: detected.url }
+    status.textContent = 'Fetching the page and converting it to Markdown…'
   } else {
     isSourceDeck = true
     requestBody = { md: raw }

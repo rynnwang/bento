@@ -7113,3 +7113,32 @@ chance to run and it is cheap. Reconciliation for this cycle: 41 commits, 40
 mapped, 1 correctly absent, run by bento-team-slides.
 
 Claude-Session: https://claude.ai/code/session_01Jcfdy8A69nonyATtm8vRy8
+
+## 2026-09-25 — Web clipper: a URL becomes an `'md'` deck (no new kind)
+
+`POST /api/decks {url}` fetches a public page server-side, extracts the
+article, converts it to Markdown and stores it as an ordinary `'md'` deck.
+**No new deck kind**: once converted, a clip IS a Markdown deck (same render,
+download, PDF, search, rename, re-upload), and the source URL + clip date live
+in the text itself (a "Source:" line under the title) rather than a column.
+
+- **In-house, not a service.** `platform/worker/src/webclip.ts` = a lenient
+  tokenizer/tree, a Readability-style content pick (`<article>`/`<main>`, else
+  paragraph-density scoring with a link-density penalty), and an HTML→Markdown
+  converter that emits only what `markdown.ts` renders. Workers have no DOM;
+  Browser Rendering was rejected (10 min/day free tier); r.jina.ai-style
+  third-party readers were rejected (they'd receive every URL saved).
+- **Media stays online**: links/images are resolved to absolute URLs (lazy
+  `data-src`/`srcset` honoured). Nothing is copied into R2, so clips can rot if
+  the source removes an image — the price of "keep media online".
+- **Safety**: http(s) only, no credentials, no loopback/private/`.local`
+  hosts, redirects followed MANUALLY with re-validation per hop (max 5), 15s
+  timeout, 5MB read cap, owner-only route. Output goes through the same
+  escaping renderer as any `md` deck, so a hostile page cannot inject markup.
+- **Known limits (reported, not hidden)**: JS-rendered pages, logins and
+  paywalls yield too little text → 422 with an explanation rather than a blank
+  deck; sites that block bots answer 502. Index/landing pages clip poorly (it is
+  an article extractor).
+- **UI**: the create box's format detection treats a lone http(s) URL (no
+  filename) as `url`. Tests: `test/webclip.spec.ts` + router `{url}` checks
+  with a stubbed `fetch`.
