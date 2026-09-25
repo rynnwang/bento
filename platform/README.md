@@ -198,6 +198,43 @@ portable file must not point at a URL relative to one deployment); with no
 such host — a standalone opened file, bento.page — both buttons fall back
 to the original v1 local print path, unchanged and still fully offline.
 
+## Markdown decks: `kind:'md'`
+
+The create page's Step 2 is **one box** — paste text, drop a file onto it, or
+use "Upload file…" — and the format is detected from the *content* (shown
+live as a "Detected: …" chip), so there's nothing to choose:
+
+| You give it | Detected as | Becomes |
+|---|---|---|
+| `{…}` JSON that isn't a `bento/slides` doc | outline | compiled into an editable Bento deck |
+| `{"format":"bento/slides",…}` | Bento doc | stored as-is, editable |
+| starts with `<!doctype html>` / `<html>` / `<head>` / `<body>` | HTML page | an `'html'` deck |
+| anything else | Markdown | an `'md'` deck |
+
+A `{`-leading reply that fails to parse is reported as an **error**, not
+silently turned into a Markdown deck (a truncated AI reply shouldn't slip
+through as prose) — unless the file is named `.md`. The filename is only a
+tiebreaker; paste and upload behave identically, and the server stays
+authoritative by request key (`doc`/`html`/`md`) — it does not sniff.
+
+An `'md'` deck stores the **raw Markdown** (`docs/<id>/doc.md`) and renders it
+to a clean web page at view time (`src/markdown.ts`; light/dark, print
+stylesheet) — so the original `.md` downloads byte-for-byte and a renderer
+improvement reaches every existing deck. Supported: headings (ATX + setext),
+emphasis/strong/strikethrough, lists (nested, task lists), GFM tables,
+fenced/indented code, block quotes, links/images/autolinks, hard breaks,
+horizontal rules, front-matter `title:`. Not supported (shown as literal
+text, never breaks the page): reference-style links, footnotes, raw HTML
+blocks; images must be absolute URLs (no asset store).
+
+**Raw HTML in Markdown is always escaped, never passed through**, and link/
+image URLs are scheme-allow-listed (`javascript:`, `data:` etc. render as
+plain text) — so a Markdown deck can't carry script; that's what an `'html'`
+deck is for. It's served through the same sandboxed iframe wrapper as an
+`'html'` deck (defense in depth), is always view-only for anyone but you
+(`'edit'` → `'view'`), and PDFs through the same server-side html path.
+See `docs/DECISIONS.md` 2026-09-25.
+
 ## Sidebar: pinning, resizing, and a real preview panel
 
 - **Pin** (`migrations/0006_pinned.sql`'s `decks.pinned`, `PATCH
@@ -688,9 +725,9 @@ problem for whenever that app exists, not solved here.
 | `/api/compile` | POST | owner session | `{outline}` → `{doc}`. Pure — nothing is stored |
 | `/api/decks` | GET | owner session | `{decks: [{id, title, createdAt, updatedAt, access, kind, pinned, projectId, hasPassword}]}`, pinned first then most-recently-touched — the sidebar's data source. `hasPassword` is a plain boolean; the hash/salt are never sent to any client, owner included |
 | `/api/search` | GET | owner session | `?q=` (required, space-separated terms AND'd) → same shape as `GET /api/decks`, capped at 10, matching pinned-then-recency order. 400 if `q` is missing/blank. Matches title OR the precomputed `search_text` per term — see the "Search" section |
-| `/api/decks` | POST | owner session | `{doc, access?}` (a `'bento'` deck) or `{html, access?}` (an `'html'` deck) → `{id, url}`. `access` is one of `'private'\|'view'\|'edit'`; defaults to `'edit'` for `doc`, coerced to `'view'` if `'edit'` for `html` (meaningless for that kind, not rejected) |
-| `/api/decks/:id` | GET | owner session | `{kind:'bento', doc}` or `{kind:'html', html}` |
-| `/api/decks/:id` | PATCH | owner session | `{doc}` replaces a `'bento'` deck's stored doc; `{html}` re-uploads an `'html'` deck's stored bytes wholesale, re-deriving the title from the new file's `<title>`. Sending the wrong shape for the deck's kind is a 400, not a silent no-op |
+| `/api/decks` | POST | owner session | `{doc, access?}` (a `'bento'` deck), `{html, access?}` (an `'html'` deck) or `{md, access?}` (an `'md'` deck) → `{id, url}`. `access` is one of `'private'\|'view'\|'edit'`; defaults to `'edit'` for `doc`, coerced to `'view'` if `'edit'` for `html`/`md` (meaningless for those kinds, not rejected) |
+| `/api/decks/:id` | GET | owner session | `{kind:'bento', doc}`, `{kind:'html', html}` or `{kind:'md', md}` |
+| `/api/decks/:id` | PATCH | owner session | `{doc}` replaces a `'bento'` deck's stored doc; `{html}` re-uploads an `'html'` deck's stored bytes wholesale, re-deriving the title from the new file's `<title>`; `{md}` does the same for an `'md'` deck (title from front-matter `title:`, else the first heading). Sending the wrong shape for the deck's kind is a 400, not a silent no-op |
 | `/api/decks/:id` | DELETE | owner session | permanently deletes the deck: D1 row + stored bytes (`doc.json` or `doc.html`) + every asset blob under its R2 namespace. 404 on an unknown id |
 | `/api/decks/:id/access` | PATCH | owner session | `{access}` → `{ok, access}`. Changes what anonymous viewers get. 422 on an invalid value, 404 on an unknown id |
 | `/api/decks/:id/title` | PATCH | owner session | `{title}` → `{ok}`. For a `'bento'` deck, rewrites `doc.title` itself (there's no separate cosmetic label) — same effect as editing the title in the live editor. For an `'html'` deck, updates only the D1 label; the stored bytes are untouched. 422 on a blank title, 404 on an unknown id |

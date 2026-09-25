@@ -92,6 +92,24 @@ export function extractBentoSearchText(doc: unknown): string {
   return out.join(' ').toLowerCase().slice(0, MAX_SEARCH_TEXT)
 }
 
+/** Lowercase, size-capped text from an 'md' deck's Markdown source — syntax
+ *  characters stripped so a search for "roadmap" doesn't have to dodge
+ *  `**`, `#`, link targets or fence markers. Front matter is kept (a
+ *  `title:`/`tags:` line is exactly what someone might search for). */
+export function extractMdSearchText(md: string): string {
+  return md
+    .replace(/^```.*$/gm, ' ')
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/[`*_~#>|]/g, ' ')
+    .replace(/^\s*[-+]\s+/gm, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+    .slice(0, MAX_SEARCH_TEXT)
+}
+
 /** Lowercase, tag-stripped, size-capped text from a raw 'html' deck file. */
 export function extractHtmlSearchText(html: string): string {
   return stripHtmlTags(html).toLowerCase().slice(0, MAX_SEARCH_TEXT)

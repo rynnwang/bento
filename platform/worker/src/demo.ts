@@ -441,6 +441,13 @@ ${PAGE_STYLES}
     flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .deck-item .deck-time { flex: 0 0 auto; color: var(--text-dim); font-size: 10.5px; font-weight: 400; }
+  .format-list { margin: 0 0 8px; padding-left: 20px; font-size: 13.5px; line-height: 1.6; color: var(--text); }
+  .format-list li { margin: 2px 0; }
+  .hint { color: var(--muted); font-size: 13px; margin: 0 0 10px; }
+  textarea.dragging { border-color: var(--accent); background: var(--bg-elev); box-shadow: 0 0 0 3px rgb(237 130 102 / 0.25); }
+  .detected { min-height: 20px; margin: 8px 0 4px; font-size: 13px; color: var(--muted); }
+  .detected.ok { color: var(--ok, #3aa86b); }
+  .detected.bad { color: var(--err, #e5584f); }
   .deck-kind, .deck-status, .deck-pin-badge, .deck-password-badge {
     flex: 0 0 auto; width: 15px; display: flex; align-items: center; justify-content: center; opacity: 0.7;
   }
@@ -722,15 +729,18 @@ ${PAGE_STYLES}
 
       <section class="card">
         <div class="step-label">Step 2</div>
-        <h2>Paste — or upload — the AI's JSON or a self-contained HTML deck</h2>
-        <p>Paste whatever the AI replied with, or upload the file if it gave you one to download instead
-        (most JSON replies come as a downloadable file, not something meant to be copy-pasted). We'll
-        detect whether it's outline JSON (from step 1), a full <code>bento/slides</code> document (the
-        "advanced" path — paste or upload one directly to skip the AI entirely), or a complete,
-        self-running HTML slide deck some AIs will generate directly if you just ask for one — that gets
-        stored and served as-is, not compiled into Bento's own format, so it's always view-only for
-        anyone but you.</p>
-        <textarea id="input" spellcheck="false" placeholder="Paste outline JSON, a bento/slides document, or a complete <!doctype html> deck — or use the Upload buttons below"></textarea>
+        <h2>Paste or upload — we'll work out the format</h2>
+        <p>One box for everything. Paste text, drop a file onto it, or use <strong>Upload file…</strong> —
+        the format is detected from the content, so you never have to pick one:</p>
+        <ul class="format-list">
+          <li><strong>Outline JSON</strong> (from step 1) — compiled into a Bento deck you can edit and present</li>
+          <li><strong>A <code>bento/slides</code> document</strong> (advanced) — stored as-is, editable</li>
+          <li><strong>A complete HTML page</strong> (<code>&lt;!doctype html&gt;</code>…) — stored and served as-is</li>
+          <li><strong>Markdown</strong> (<code>.md</code>) — rendered as a clean web page; keeps your source</li>
+        </ul>
+        <p class="hint">HTML and Markdown decks are always view-only for anyone but you.</p>
+        <textarea id="input" spellcheck="false" placeholder="Paste outline JSON, a bento/slides document, an HTML page, or Markdown — or drop a file here"></textarea>
+        <div id="detected" class="detected" aria-live="polite"></div>
         <div class="access-field">
           <label for="accessSelect">Who can open this deck's link? (changeable anytime from the sidebar's ⚙️)</label>
           <select id="accessSelect">
@@ -742,10 +752,8 @@ ${PAGE_STYLES}
         <div class="actions">
           <button id="loadOutlineExample" type="button">Load pattern's example</button>
           <button id="loadExample" type="button">Load example doc (advanced)</button>
-          <button id="uploadJsonBtn" type="button">Upload JSON file…</button>
-          <input type="file" id="jsonFileInput" accept=".json,application/json" style="display:none">
-          <button id="uploadHtmlBtn" type="button">Upload HTML file…</button>
-          <input type="file" id="htmlFileInput" accept=".html,.htm,text/html" style="display:none">
+          <button id="uploadBtn" type="button">Upload file…</button>
+          <input type="file" id="fileInput" accept=".json,.html,.htm,.md,.markdown,.txt,application/json,text/html,text/markdown,text/plain" style="display:none">
           <button id="create" class="primary" type="button">Create deck →</button>
         </div>
         <div id="status" class="status"></div>
@@ -779,6 +787,7 @@ const ICONS = {
   code: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/></svg>',
   check: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
   pin: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 1 1 0 0 0 0-2H8a1 1 0 0 0 0 2 1 1 0 0 1 1 1Z"/></svg>',
+  doc: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6"/><path d="M9 17h6"/></svg>',
   upload: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/></svg>',
   download: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>',
   folder: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>',
@@ -845,7 +854,11 @@ const collapsedProjects = new Set()
 
 function deckItemHtml(d) {
   const a = accessMeta(d.access)
-  const kindBadge = d.kind === 'html' ? '<span class="deck-kind" title="Self-contained HTML file — stored and served as-is">' + ICONS.code + '</span>' : ''
+  const kindBadge = d.kind === 'html'
+    ? '<span class="deck-kind" title="Self-contained HTML file — stored and served as-is">' + ICONS.code + '</span>'
+    : d.kind === 'md'
+      ? '<span class="deck-kind" title="Markdown document — rendered to a web page, source kept as-is">' + ICONS.doc + '</span>'
+      : ''
   const pinBadge = d.pinned ? '<span class="deck-pin-badge" title="Pinned">' + ICONS.pin + '</span>' : ''
   const pwBadge = d.hasPassword ? '<span class="deck-password-badge" title="Password protected — the link alone isn\\'t enough">' + ICONS.key + '</span>' : ''
   // Full title + exact timestamp live in the native hover tooltip — the row
@@ -1083,15 +1096,18 @@ async function togglePin(id, info) {
   }
 }
 
-// Re-upload: the one edit path an 'html' deck has (there's no in-place field
+// Re-upload: the one edit path an 'html' or 'md' deck has (there's no in-place field
 // edit for opaque content) — picks a file, reads it client-side, PATCHes the
 // SAME endpoint POST /api/decks uses to create one, replacing the deck's
 // stored bytes wholesale. A confirm() gates it since, unlike a 'bento'
 // deck's live editor, this has no undo.
-function reuploadHtmlDeck(id, info) {
+// Works for both opaque-source kinds — 'html' (PATCH { html }) and 'md'
+// (PATCH { md }); the file picker filters to the deck's own kind.
+function reuploadSourceDeck(id, info) {
+  const isMd = info.kind === 'md'
   const input = document.createElement('input')
   input.type = 'file'
-  input.accept = '.html,.htm,text/html'
+  input.accept = isMd ? '.md,.markdown,.txt,text/markdown,text/plain' : '.html,.htm,text/html'
   input.onchange = () => {
     const file = input.files && input.files[0]
     if (!file) return
@@ -1102,7 +1118,7 @@ function reuploadHtmlDeck(id, info) {
         const res = await fetch('/api/decks/' + id, {
           method: 'PATCH',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ html: reader.result }),
+          body: JSON.stringify(isMd ? { md: reader.result } : { html: reader.result }),
         })
         if (!res.ok) throw new Error('failed')
         loadDeckList()
@@ -1219,14 +1235,14 @@ function openDeckMenu(id, x, y) {
   menu.className = 'ctx-menu'
 
   function renderMain() {
-    const reuploadItem = info.kind === 'html'
+    const reuploadItem = info.kind !== 'bento'
       ? '<button type="button" class="ctx-item" data-a="reupload">' + iconSpan(ICONS.upload) + '<span>Re-upload…</span></button>'
       : ''
     // 'html' decks only — a chat AI's raw file, so "download" is how you get
     // that exact original file back out for use somewhere else (Bento decks
     // are always editable/re-exportable from the live editor itself, so
     // this item would be redundant noise on every other deck's menu).
-    const downloadItem = info.kind === 'html'
+    const downloadItem = info.kind !== 'bento'
       ? '<button type="button" class="ctx-item" data-a="download">' + iconSpan(ICONS.download) + '<span>Download</span></button>'
       : ''
     menu.innerHTML =
@@ -1246,8 +1262,8 @@ function openDeckMenu(id, x, y) {
       '<button type="button" class="ctx-item danger" data-a="delete">' + iconSpan(ICONS.trash) + '<span>Delete…</span></button>'
     menu.querySelector('[data-a="pin"]').onclick = () => { closeMenu(); togglePin(id, info) }
     menu.querySelector('[data-a="rename"]').onclick = () => { closeMenu(); startInlineRename(id, info) }
-    if (info.kind === 'html') {
-      menu.querySelector('[data-a="reupload"]').onclick = () => { closeMenu(); reuploadHtmlDeck(id, info) }
+    if (info.kind !== 'bento') {
+      menu.querySelector('[data-a="reupload"]').onclick = () => { closeMenu(); reuploadSourceDeck(id, info) }
       menu.querySelector('[data-a="download"]').onclick = () => { closeMenu(); window.open('/d/' + id + '/download', '_blank', 'noopener') }
     }
     menu.querySelector('[data-a="access"]').onclick = renderAccess
@@ -1312,7 +1328,7 @@ function openDeckMenu(id, x, y) {
   function renderAccess() {
     // 'edit' means nothing for an 'html' deck — there's no document to edit
     // in place, only bytes to serve as-is (see store.ts's DeckAccess).
-    const levels = info.kind === 'html' ? ACCESS_LEVELS.filter(a => a.value !== 'edit') : ACCESS_LEVELS
+    const levels = info.kind !== 'bento' ? ACCESS_LEVELS.filter(a => a.value !== 'edit') : ACCESS_LEVELS
     menu.innerHTML =
       '<div class="ctx-header"><button type="button" data-a="back">' + ICONS.chevronLeft + '</button><span>Access</span></div>' +
       levels.map(a =>
@@ -1436,9 +1452,9 @@ function showPreview(id, title, href) {
   previewOpenTab.href = href
   // 'html' decks only — see the same item in the deck's ⚙️ menu for why
   // (this is the one edit-copy-out path an opaque uploaded file has).
-  const isHtml = deckIndex[id]?.kind === 'html'
-  previewDownload.hidden = !isHtml
-  if (isHtml) previewDownload.href = '/d/' + id + '/download'
+  const isSourceDeck = !!deckIndex[id] && deckIndex[id].kind !== 'bento'
+  previewDownload.hidden = !isSourceDeck
+  if (isSourceDeck) previewDownload.href = '/d/' + id + '/download'
   previewFrame.src = href
   wizardWrap.hidden = true
   previewPanel.hidden = false
@@ -1572,53 +1588,97 @@ document.getElementById('copyPrompt').onclick = async () => {
     alert('Could not copy automatically — select the text above and copy it by hand.')
   }
 }
-document.getElementById('loadOutlineExample').onclick = () => {
-  document.getElementById('input').value = JSON.stringify(activePattern.example, null, 2)
+// ——— Step 2: one box, any format. Detection looks at the CONTENT (a
+// filename is only a tiebreaker), so pasting and uploading behave identically
+// and there is no separate upload endpoint — a file just lands in the box.
+let pickedFilename = ''
+function looksLikeHtmlDocument(raw) {
+  return /^\\s*(<!--[\\s\\S]*?-->\\s*)*<(!doctype\\s+html|html[\\s>]|head[\\s>]|body[\\s>])/i.test(raw)
 }
-document.getElementById('loadExample').onclick = () => {
-  document.getElementById('input').value = ${JSON.stringify(exampleJson)}
-}
-document.getElementById('uploadJsonBtn').onclick = () => {
-  document.getElementById('jsonFileInput').click()
-}
-document.getElementById('jsonFileInput').onchange = (e) => {
-  const file = e.target.files && e.target.files[0]
-  if (!file) return
-  const reader = new FileReader()
-  reader.onload = () => {
-    // Just drops the text into the SAME box the paste path uses — the
-    // create handler's own JSON.parse + format detection (outline vs
-    // bento/slides) does the rest, so this isn't a separate upload
-    // endpoint, just a more convenient way to get the AI's downloaded
-    // .json file into the box without opening and copy-pasting it by hand.
-    document.getElementById('input').value = reader.result
+function detectFormat(raw, filename) {
+  const text = raw.replace(/^\\uFEFF/, '')
+  const trimmed = text.trim()
+  if (!trimmed) return { kind: null }
+  const ext = (filename || '').toLowerCase().split('.').pop()
+  if (trimmed[0] === '{') {
+    try {
+      const parsed = JSON.parse(trimmed)
+      if (parsed && parsed.format === 'bento/slides') return { kind: 'bento-doc', parsed }
+      return { kind: 'outline', parsed }
+    } catch (e) {
+      // A .md file that happens to open with a brace is still Markdown;
+      // anything else that starts like JSON but isn't is a truncated/garbled
+      // reply, and silently turning THAT into a Markdown deck would hide it.
+      if (ext !== 'md' && ext !== 'markdown') return { kind: 'bad-json', error: e.message }
+    }
+  } else if (ext === 'json') {
+    return { kind: 'bad-json', error: 'expected a JSON object ({ … })' }
   }
-  reader.onerror = () => { alert('Could not read that file. Try again.') }
-  reader.readAsText(file)
-  e.target.value = ''
+  if (looksLikeHtmlDocument(text) || ext === 'html' || ext === 'htm') return { kind: 'html' }
+  return { kind: 'md' }
 }
-document.getElementById('uploadHtmlBtn').onclick = () => {
-  document.getElementById('htmlFileInput').click()
+const FORMAT_LABELS = {
+  'outline': 'Outline JSON — will be compiled into an editable Bento deck',
+  'bento-doc': 'bento/slides document — stored as-is, editable',
+  'html': 'HTML page — stored and served as-is (view only)',
+  'md': 'Markdown — will be rendered as a web page (view only)',
 }
-document.getElementById('htmlFileInput').onchange = (e) => {
-  const file = e.target.files && e.target.files[0]
-  if (!file) return
-  const reader = new FileReader()
-  reader.onload = () => {
-    document.getElementById('input').value = reader.result
-    // An uploaded HTML file has no in-place edit mode — 'edit' would just get
-    // coerced to 'view' server-side anyway (see the create handler below), so
-    // reflect that here instead of leaving a misleading selection showing.
+function afterInputChanged() {
+  const chip = document.getElementById('detected')
+  const raw = document.getElementById('input').value
+  const d = detectFormat(raw, pickedFilename)
+  if (d.kind === null) { chip.textContent = ''; chip.className = 'detected'; return }
+  if (d.kind === 'bad-json') {
+    chip.className = 'detected bad'
+    chip.textContent = "Looks like JSON but doesn't parse: " + d.error
+    return
+  }
+  chip.className = 'detected ok'
+  chip.textContent = 'Detected: ' + FORMAT_LABELS[d.kind]
+  // HTML and Markdown have no in-place edit mode — 'edit' would just get
+  // coerced to 'view' server-side, so reflect that instead of leaving a
+  // misleading selection showing.
+  if (d.kind === 'html' || d.kind === 'md') {
     const accessSelect = document.getElementById('accessSelect')
     if (accessSelect.value === 'edit') accessSelect.value = 'view'
   }
+}
+function loadFile(file) {
+  if (!file) return
+  const reader = new FileReader()
+  reader.onload = () => {
+    pickedFilename = file.name
+    document.getElementById('input').value = reader.result
+    afterInputChanged()
+  }
   reader.onerror = () => { alert('Could not read that file. Try again.') }
   reader.readAsText(file)
+}
+document.getElementById('input').addEventListener('input', () => { pickedFilename = ''; afterInputChanged() })
+document.getElementById('loadOutlineExample').onclick = () => {
+  pickedFilename = ''
+  document.getElementById('input').value = JSON.stringify(activePattern.example, null, 2)
+  afterInputChanged()
+}
+document.getElementById('loadExample').onclick = () => {
+  pickedFilename = ''
+  document.getElementById('input').value = ${JSON.stringify(exampleJson)}
+  afterInputChanged()
+}
+document.getElementById('uploadBtn').onclick = () => {
+  document.getElementById('fileInput').click()
+}
+document.getElementById('fileInput').onchange = (e) => {
+  loadFile(e.target.files && e.target.files[0])
   e.target.value = '' // lets picking the SAME file again re-fire onchange
 }
-function looksLikeHtmlDocument(raw) {
-  return /^\\s*<(!doctype\\s+html|html[\\s>])/i.test(raw)
-}
+;(() => {
+  const box = document.getElementById('input')
+  const stop = (e) => { e.preventDefault(); e.stopPropagation() }
+  ;['dragenter', 'dragover'].forEach((t) => box.addEventListener(t, (e) => { stop(e); box.classList.add('dragging') }))
+  ;['dragleave', 'drop'].forEach((t) => box.addEventListener(t, (e) => { stop(e); box.classList.remove('dragging') }))
+  box.addEventListener('drop', (e) => loadFile(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]))
+})()
 
 document.getElementById('create').onclick = async () => {
   const status = document.getElementById('status')
@@ -1627,23 +1687,28 @@ document.getElementById('create').onclick = async () => {
   status.style.display = 'block'
 
   const raw = document.getElementById('input').value
-  let parsed
-  try {
-    parsed = JSON.parse(raw)
-  } catch (e) {
-    parsed = undefined
-  }
+  const detected = detectFormat(raw, pickedFilename)
 
   let requestBody
-  let isHtml = false
-  if (parsed !== undefined && parsed && parsed.format === 'bento/slides') {
-    requestBody = { doc: parsed }
-  } else if (parsed !== undefined) {
+  // HTML and Markdown are both "opaque source" decks: no Present link, no
+  // 'edit' access.
+  let isSourceDeck = false
+  if (detected.kind === null) {
+    status.className = 'status err'
+    status.textContent = 'Nothing to create yet — paste something or upload a file first.'
+    return
+  } else if (detected.kind === 'bad-json') {
+    status.className = 'status err'
+    status.textContent = "That looks like JSON but doesn't parse: " + detected.error
+    return
+  } else if (detected.kind === 'bento-doc') {
+    requestBody = { doc: detected.parsed }
+  } else if (detected.kind === 'outline') {
     try {
       const compileRes = await fetch('/api/compile', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ outline: parsed }),
+        body: JSON.stringify({ outline: detected.parsed }),
       })
       const compileBody = await compileRes.json()
       if (!compileRes.ok) {
@@ -1658,13 +1723,12 @@ document.getElementById('create').onclick = async () => {
       status.textContent = 'Compile request failed: ' + e.message
       return
     }
-  } else if (looksLikeHtmlDocument(raw)) {
-    isHtml = true
+  } else if (detected.kind === 'html') {
+    isSourceDeck = true
     requestBody = { html: raw }
   } else {
-    status.className = 'status err'
-    status.textContent = 'Not valid JSON, and not an HTML document either (expected it to start with <!doctype html> or <html>).'
-    return
+    isSourceDeck = true
+    requestBody = { md: raw }
   }
 
   try {
@@ -1673,7 +1737,7 @@ document.getElementById('create').onclick = async () => {
     // place — so it's downgraded here too, matching the server's own
     // coercion (POST /api/decks), so the success note below is accurate
     // rather than claiming "editable" when the server didn't grant it.
-    if (isHtml && access === 'edit') access = 'view'
+    if (isSourceDeck && access === 'edit') access = 'view'
     requestBody.access = access
     const res = await fetch('/api/decks', {
       method: 'POST',
@@ -1691,7 +1755,7 @@ document.getElementById('create').onclick = async () => {
     const note = access === 'private' ? ' — private, only you can open it'
       : access === 'view' ? ' — view only for anyone but you'
       : ''
-    const presentLink = isHtml ? '' : '<a href="' + viewUrl + '#present" target="_blank" rel="noopener">Present</a> · '
+    const presentLink = isSourceDeck ? '' : '<a href="' + viewUrl + '#present" target="_blank" rel="noopener">Present</a> · '
     status.innerHTML =
       'Created <strong>' + body.id + '</strong>' + note + '<br>' +
       '<a href="' + viewUrl + '" target="_blank" rel="noopener">Open it</a> · ' +
