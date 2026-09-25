@@ -7155,3 +7155,19 @@ captchas/JS challenges, or routing URLs through a third-party reader/archive
 (privacy). A site that still refuses is reported as blocked. Also fixed the same
 day: `<body>` state classes (e.g. WeChat's `comment_feature`) no longer count as
 page noise.
+
+## 2026-09-25 — Web clipper: optional free-tier AI cleanup that only DELETES blocks
+
+Heuristic extraction leaves boilerplate on marketing-style pages (currency
+switchers, "jump to" lists, footers). `clipclean.ts` runs one Workers AI call
+(`[ai]` binding, free 10k neurons/day; a clip costs well under 100) after
+extraction. **The model never writes text**: it sees numbered block previews and
+returns `{"drop":[n…]}`; removal is done in code. So it cannot paraphrase,
+hallucinate or truncate, and a prompt injection in a page can at worst delete
+blocks — bounded by: title + Source line are never droppable, an answer removing
+>60% of the characters is discarded, pages over 500 blocks skip the pass, 12s
+timeout. Best-effort: no binding, any AI error/quota exhaustion, or unparsable
+output stores the heuristic clip unchanged. Rejected: asking the model to
+rewrite/return the cleaned Markdown (token cost, drift, truncation on long
+articles). Not verifiable offline — model quality was only checked via a mocked
+binding; judge it on real clips and tune the prompt in `clipclean.ts`.

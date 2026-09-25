@@ -23,4 +23,7 @@ export interface Env {
    *  limits/) — pdf.ts's R2 caching exists specifically to stay well inside
    *  that budget regardless of how many times a deck's PDF is downloaded. */
   BROWSER: BrowserWorker
+  /** Workers AI (free tier: 10k neurons/day). OPTIONAL — used only by the web
+   *  clipper's cleanup pass (clipclean.ts), which is skipped when absent. */
+  AI?: import('./clipclean.ts').AiBinding
 }

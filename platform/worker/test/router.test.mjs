@@ -2203,6 +2203,31 @@ await check('POST /api/decks {url} clips the page into an md deck (media stays o
   }
 })
 
+await check('POST /api/decks {url} runs the optional AI cleanup (drops the blocks it names) and survives an AI failure', async () => {
+  globalThis.fetch = async () => new Response(CLIP_HTML.replace('<p>More', '<p>SWITCHER €$£</p><p>More'), { status: 200, headers: { 'content-type': 'text/html' } })
+  try {
+    let prompt = ''
+    env.AI = {
+      run: async (_m, input) => {
+        prompt = input.messages[1].content
+        const idx = prompt.split('\n').findIndex((l) => l.includes('SWITCHER'))
+        return { response: JSON.stringify({ drop: [idx] }) }
+      },
+    }
+    const ok = await readBody(await clipPost({ url: 'https://ai.example.com/a' }))
+    assert(ok.data.id, `create failed: ${ok.text}`)
+    const md = new TextDecoder().decode(env.DOCS._objects.get(`docs/${ok.data.id}/doc.md`).bytes)
+    assert(!md.includes('SWITCHER') && md.includes('More genuine'), `cleanup result: ${md.slice(0, 400)}`)
+    env.AI = { run: async () => { throw new Error('quota exhausted') } }
+    const failed = await readBody(await clipPost({ url: 'https://ai.example.com/a' }))
+    const md2 = new TextDecoder().decode(env.DOCS._objects.get(`docs/${failed.data.id}/doc.md`).bytes)
+    assert(md2.includes('SWITCHER'), 'AI failure must leave the heuristic clip untouched')
+  } finally {
+    delete env.AI
+    globalThis.fetch = realFetch
+  }
+})
+
 await check('POST /api/decks {url} rejects bad / private URLs without fetching, and non-HTML / HTTP errors cleanly', async () => {
   let calls = 0
   globalThis.fetch = async () => {

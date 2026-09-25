@@ -136,6 +136,7 @@ import { renderDeckPasswordGate } from './sharePage.ts'
 import { renderBentoDeckPdf, renderHtmlDeckPdf, PDF_RENDER_VERSION } from './pdf.ts'
 import { renderMdPage, extractMdTitle } from './markdown.ts'
 import { clipUrl, ClipError } from './webclip.ts'
+import { aiCleanClip } from './clipclean.ts'
 import { faviconResponse } from './favicon.ts'
 import { parseOutline } from './compile/schema.ts'
 import { compileOutline } from './compile/compile.ts'
@@ -454,6 +455,7 @@ async function handleCreate(req: Request, env: Env): Promise<Response> {
   if (typeof rawUrl === 'string') {
     try {
       const clip = await clipUrl(rawUrl, new URL(req.url).hostname)
+      clip.md = (await aiCleanClip(env.AI, clip.md)).md
       if (clip.md.length > MAX_HTML_DECK_BYTES) return json({ error: 'clipped page is too large' }, { status: 413 })
       const clipAccess: DeckAccess = access === 'edit' || access === undefined ? 'view' : access
       const { id } = await createMdDeck(env, clip.md, clip.title, clipAccess)

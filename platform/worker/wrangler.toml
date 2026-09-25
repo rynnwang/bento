@@ -40,3 +40,11 @@ database_id = "9408e034-8812-402a-ac21-42bd78f9f24f"
 # needed here (see docs/DECISIONS.md).
 [browser]
 binding = "BROWSER"
+
+# Workers AI (env.ts's AI) — used ONLY by the web clipper's optional cleanup
+# pass (clipclean.ts): a small model picks which extracted blocks are page
+# boilerplate. Free tier: 10,000 neurons/day; a clip costs well under 100.
+# The pass is best-effort — with no binding, or on any AI error/quota
+# exhaustion, the heuristic clip is stored unchanged.
+[ai]
+binding = "AI"

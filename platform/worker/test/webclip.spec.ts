@@ -6,6 +6,7 @@
 // conversion itself: nothing a hostile page contains may become live markup.
 import { htmlToClip, parseHtml, validateClipUrl, decodeEntities } from '../src/webclip.ts'
 import { renderMarkdown } from '../src/markdown.ts'
+import { splitBlocks, parseDrop, aiCleanClip } from '../src/clipclean.ts'
 
 let failures = 0
 function check(name: string, fn: () => void): void {
@@ -159,6 +160,52 @@ check('pathological input terminates quickly', () => {
   } catch { /* too little content is fine — we only care that it returns */ }
   htmlToClip('<a href="' + 'a'.repeat(100000) + '">' + '<'.repeat(50000) + '</a>' + `<p>${filler}</p>`.repeat(3), 'https://x.example.com/')
   assert(Date.now() - t0 < 4000, `took ${Date.now() - t0}ms`)
+})
+
+const MDDOC = ["# T",
+  "Source: [x](https://x.com)",
+  "[€](a) [$](b)",
+  "Real paragraph one that is long enough to matter.",
+  "```js\nlet a\n\nlet b\n```",
+  "Real paragraph two that is also long enough.",
+  "© 2026 Footer text"].join('\n\n')
+
+async function cleanCheck(name: string, fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn()
+    console.log(`  ✓ ${name}`)
+  } catch (e) {
+    failures++
+    console.error(`  ✗ ${name}: ${e instanceof Error ? e.message : e}`)
+  }
+}
+
+check('splitBlocks keeps fenced code (with blank lines) as ONE block', () => {
+  const b = splitBlocks(MDDOC)
+  assert(b.length === 7, `got ${b.length}: ${JSON.stringify(b)}`)
+  assert(b[4]!.startsWith('```js') && b[4]!.includes('let b'), b[4]!)
+})
+
+check('parseDrop: tolerant of shapes, ignores head/out-of-range/garbage', () => {
+  assert([...(parseDrop('sure: {"drop":[2,"6",99,-1,0,1,"x"]}', 7) ?? [])].join() === '2,6', 'string reply')
+  assert([...(parseDrop({ response: { drop: [3] } }, 7) ?? [])].join() === '3', 'object reply')
+  assert(parseDrop('no json here', 7) === null, 'no json')
+  assert(parseDrop('{"nope":1}', 7) === null, 'wrong shape')
+})
+
+await cleanCheck('aiCleanClip removes only the named blocks, deterministically', async () => {
+  const ai = { run: async () => ({ response: '{"drop":[2,6]}' }) }
+  const r = await aiCleanClip(ai, MDDOC)
+  assert(r.dropped === 2, `dropped ${r.dropped}`)
+  assert(!r.md.includes('€') && !r.md.includes('Footer'), r.md)
+  assert(r.md.includes('let a\n\nlet b') &&r.md.includes('Real paragraph two'), 'content lost')
+})
+
+await cleanCheck('aiCleanClip falls back to the input on: no binding, error, hang, junk, or a mass-delete answer', async () => {
+  assert((await aiCleanClip(undefined, MDDOC)).md === MDDOC, 'no binding')
+  assert((await aiCleanClip({ run: async () => { throw new Error('quota') } }, MDDOC)).md === MDDOC, 'error')
+  assert((await aiCleanClip({ run: async () => 'lol' }, MDDOC)).md === MDDOC, 'junk')
+  assert((await aiCleanClip({ run: async () => ({ response: '{"drop":[2,3,4,5,6]}' }) }, MDDOC)).md === MDDOC, 'drop-everything must be rejected')
 })
 
 console.log('')
