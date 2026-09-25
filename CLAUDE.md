@@ -328,6 +328,7 @@ Current feature set, all owner-only except where noted:
   (`doc`/`html`/`md`) and does not sniff. Not supported: reference links,
   footnotes, raw HTML blocks, relative images (no asset store). Rationale:
   `docs/DECISIONS.md` 2026-09-25.
+- **Limited text editing (2026-09-25)** — owner-only "✎ Edit text" on `html`/`md` decks (`textedit.ts`, `textEditClient.ts`, `PATCH /api/decks/:id/text`): double-click a leaf text element, edit, click away. Only that element's TEXT (+ b/i/u/s/br) may change — the server re-finds it in the source by text and splices its inner content; everything else stays byte-identical; anything that would alter structure/attributes/styles is rejected (422). JS-generated text can't be found and is refused. Full rules: `docs/DECISIONS.md` 2026-09-25 (limited text editing).
 - **Web clipper (2026-09-25)** — `POST /api/decks {url}`
   (`platform/worker/src/webclip.ts`): fetches a public page, extracts the
   article (Readability-style, in-house — Workers have no DOM), converts to

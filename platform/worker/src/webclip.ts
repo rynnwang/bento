@@ -9,13 +9,20 @@
 
 // ---------------------------------------------------------------- tree
 
-interface El {
+export interface El {
   tag: string
   attrs: Record<string, string>
   kids: Node[]
   parent: El | null
+  /** Source offsets (only for elements that were explicitly closed): open tag
+   *  start / end, close tag start / end. innerHTML = src.slice(oe, ce). Used by
+   *  textedit.ts to splice an edit into the original bytes. */
+  s?: number
+  oe?: number
+  ce?: number
+  e?: number
 }
-type Node = El | string
+export type Node = El | string
 
 const VOID = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr'])
 const RAW = new Set(['script', 'style', 'textarea', 'title', 'noscript', 'template'])
@@ -77,11 +84,14 @@ export function parseHtml(src: string): El {
     const close = /^<\/([a-zA-Z][^\s>/]*)[^>]*>/.exec(src.slice(i, i + 200))
     if (close) {
       const tag = close[1]!.toLowerCase()
+      const closeStart = i
       i += close[0].length
       // pop to the nearest matching open ancestor; a stray end tag is ignored
       let p: El | null = cur
       while (p && p.tag !== tag) p = p.parent
       if (p && p.parent) {
+        p.ce = closeStart
+        p.e = i
         cur = p.parent
         depth = depthOf(cur)
       }
@@ -94,6 +104,7 @@ export function parseHtml(src: string): El {
       continue
     }
     const tag = m[1]!.toLowerCase()
+    const tagStart = i
     let j = i + m[0].length
     const attrs: Record<string, string> = {}
     // attribute scan (quotes may contain '>')
@@ -135,7 +146,7 @@ export function parseHtml(src: string): El {
     } else if (BLOCKY.has(tag) && cur.tag === 'p') {
       cur = cur.parent ?? cur
     }
-    const el: El = { tag, attrs, kids: [], parent: cur }
+    const el: El = { tag, attrs, kids: [], parent: cur, s: tagStart, oe: i }
     cur.kids.push(el)
     if (VOID.has(tag)) continue
     if (RAW.has(tag)) {
@@ -144,6 +155,10 @@ export function parseHtml(src: string): El {
       const mm = re.exec(src)
       const body = src.slice(i, mm ? mm.index : n)
       if (tag !== 'script' && tag !== 'style' && tag !== 'template' && tag !== 'noscript') el.kids.push(body)
+      if (mm) {
+        el.ce = mm.index
+        el.e = mm.index + mm[0].length
+      }
       i = mm ? mm.index + mm[0].length : n
       continue
     }

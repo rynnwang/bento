@@ -21,6 +21,7 @@
 //   PATCH /api/decks/:id/title  rename a deck — OWNER ONLY
 //   PATCH /api/decks/:id/pin    pin/unpin a deck (stays atop the sidebar list) — OWNER ONLY
 //   PATCH /api/decks/:id/project  file a deck under a project, or null to unfile — OWNER ONLY
+//   PATCH /api/decks/:id/text      limited in-place text edit of an 'html'/'md' deck — OWNER ONLY, see textedit.ts
 //   PATCH /api/decks/:id/password  set or clear the deck's share password — OWNER ONLY
 //   POST /api/decks/:id/unlock  submit a share password, sets an unlock cookie on success —
 //                               PUBLIC (this is the one mutating-ish route a non-owner calls)
@@ -136,6 +137,8 @@ import { renderDeckPasswordGate } from './sharePage.ts'
 import { renderBentoDeckPdf, renderHtmlDeckPdf, PDF_RENDER_VERSION } from './pdf.ts'
 import { renderMdPage, extractMdTitle } from './markdown.ts'
 import { clipUrl, ClipError } from './webclip.ts'
+import { applyHtmlTextEdit, applyMdTextEdit, EditError } from './textedit.ts'
+import { TEXT_EDIT_CSS, TEXT_EDIT_SCRIPT } from './textEditClient.ts'
 import { aiCleanClip } from './clipclean.ts'
 import { makeBrowserRender } from './clipBrowser.ts'
 import { faviconResponse } from './favicon.ts'
@@ -248,7 +251,7 @@ function extractHtmlTitle(rawHtml: string): string {
  *  link click gives the visitor no sign anything is happening until the
  *  browser's own download UI appears seconds later — same fix, and same
  *  reasoning, as slides/src/pdfexport.ts's downloadServerPdf. */
-function htmlDeckWrapper(rawHtml: string, title: string, id: string): string {
+function htmlDeckWrapper(rawHtml: string, title: string, id: string, edit?: { version: number }): string {
   const srcdocEscaped = rawHtml.replace(/&/g, '&amp;').replace(/"/g, '&quot;')
   const titleEscaped = title.replace(/&/g, '&amp;').replace(/</g, '&lt;')
   return `<!DOCTYPE html>
@@ -265,10 +268,12 @@ iframe{border:0;width:100vw;height:100vh;display:block}
   border:2px solid currentColor;border-right-color:transparent;border-radius:50%;opacity:.85;
   animation:bento-pdf-spin .7s linear infinite}
 @keyframes bento-pdf-spin{to{transform:rotate(360deg)}}
+${edit ? TEXT_EDIT_CSS : ''}
 </style>
 </head><body>
 <iframe id="bento-html-frame" sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals" srcdoc="${srcdocEscaped}"></iframe>
 <a id="bento-pdf-btn" href="/d/${id}/pdf">⬇ Download PDF</a>
+${edit ? `<button id="bento-edit-btn" type="button" data-id="${id}" data-v="${edit.version}" aria-pressed="false">✎ Edit text</button>` : ''}
 <script>
 (function () {
   var btn = document.getElementById('bento-pdf-btn')
@@ -312,6 +317,7 @@ iframe{border:0;width:100vw;height:100vh;display:block}
   })
 })()
 <\/script>
+${edit ? `<script>${TEXT_EDIT_SCRIPT}<\/script>` : ''}
 </body></html>`
 }
 
@@ -544,6 +550,51 @@ async function handleRename(req: Request, env: Env, id: string): Promise<Respons
   if (!doc) return notFound()
   await replaceDeckDoc(env, id, { ...(doc as Record<string, unknown>), title: title.trim() })
   return json({ ok: true })
+}
+
+/** Limited in-place text edit for 'html'/'md' decks (see textedit.ts for the
+ *  rules): splices ONE element's inner content in the stored source. */
+async function handleEditText(req: Request, env: Env, id: string): Promise<Response> {
+  const meta = await getDeckMeta(env, id)
+  if (!meta) return notFound()
+  if (meta.kind !== 'html' && meta.kind !== 'md') return json({ error: 'only html and md decks support text edits' }, { status: 400 })
+  let body: { tag?: unknown; oldText?: unknown; nth?: unknown; html?: unknown; baseUpdatedAt?: unknown }
+  try {
+    body = (await req.json()) as typeof body
+  } catch {
+    return json({ error: 'invalid JSON body' }, { status: 400 })
+  }
+  if (typeof body?.tag !== 'string' || typeof body.oldText !== 'string' || typeof body.html !== 'string' || !Number.isInteger(body.nth) || (body.nth as number) < 0) {
+    return json({ error: 'expected {tag, oldText, nth, html}' }, { status: 422 })
+  }
+  // Optimistic concurrency: refuse to splice into a source that changed since
+  // the page was loaded (another edit, a re-upload) — the offsets/ordinals the
+  // browser computed may no longer mean the same element.
+  if (typeof body.baseUpdatedAt === 'number' && body.baseUpdatedAt !== meta.updated_at) {
+    return json({ error: 'This deck changed since the page was opened — reload it and try again.' }, { status: 409 })
+  }
+  const edit = { tag: body.tag, oldText: body.oldText, nth: body.nth as number, html: body.html }
+  try {
+    if (meta.kind === 'html') {
+      const src = await getDeckHtml(env, id)
+      if (src === null) return notFound()
+      const next = applyHtmlTextEdit(src, edit)
+      // The title stays whatever it is (it may have been renamed in the sidebar).
+      await replaceHtmlDeck(env, id, next, meta.title)
+    } else {
+      const src = await getDeckMd(env, id)
+      if (src === null) return notFound()
+      const { md } = applyMdTextEdit(src, edit)
+      // Follow the first heading only while the title is still the derived one.
+      const title = meta.title === extractMdTitle(src) ? extractMdTitle(md) : meta.title
+      await replaceMdDeck(env, id, md, title)
+    }
+  } catch (e) {
+    if (e instanceof EditError) return json({ error: e.message }, { status: e.status })
+    throw e
+  }
+  const after = await getDeckMeta(env, id)
+  return json({ ok: true, updatedAt: after?.updated_at ?? null })
 }
 
 async function handleDelete(env: Env, id: string): Promise<Response> {
@@ -839,7 +890,7 @@ async function handleView(req: Request, env: Env, id: string, download: boolean)
     }
     // Always the sandboxed wrapper, even for the owner — see htmlDeckWrapper's
     // header comment for why this protects the owner's OWN session most of all.
-    return html(htmlDeckWrapper(rawHtml, meta.title, id))
+    return html(htmlDeckWrapper(rawHtml, meta.title, id, owner ? { version: meta.updated_at } : undefined))
   }
 
   if (meta.kind === 'md') {
@@ -857,7 +908,7 @@ async function handleView(req: Request, env: Env, id: string, download: boolean)
     // passed through) and STILL served through the sandboxed wrapper —
     // defense in depth, and it gives the deck the same Download PDF control
     // and full-viewport shell every 'html' deck gets.
-    return html(htmlDeckWrapper(renderMdPage(md), meta.title, id))
+    return html(htmlDeckWrapper(renderMdPage(md), meta.title, id, owner ? { version: meta.updated_at } : undefined))
   }
 
   const doc = await getDeckDoc(env, id)
@@ -1075,6 +1126,11 @@ export default {
           const denied = await requireOwnerApi(req, env)
           if (denied) return denied
           return await handleSetDeckProject(req, env, parts[2]!)
+        }
+        if (parts.length === 4 && parts[3] === 'text' && req.method === 'PATCH') {
+          const denied = await requireOwnerApi(req, env)
+          if (denied) return denied
+          return await handleEditText(req, env, parts[2]!)
         }
         if (parts.length === 4 && parts[3] === 'password' && req.method === 'PATCH') {
           const denied = await requireOwnerApi(req, env)

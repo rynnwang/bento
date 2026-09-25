@@ -2166,6 +2166,77 @@ await check('DELETE removes an md deck: row and stored source both gone', async 
   assert(gone.status === 404, `expected 404 after delete, got ${gone.status}`)
 })
 
+// ——— limited text editing: PATCH /api/decks/:id/text on html + md decks
+const editPost = (id, body, cookie = ownerCookie) =>
+  worker.fetch(
+    new Request(`https://platform.example/api/decks/${id}/text`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}) },
+      body: JSON.stringify(body),
+    }),
+    env,
+  )
+const rawOf = (id, ext) => new TextDecoder().decode(env.DOCS._objects.get(`docs/${id}/doc.${ext}`).bytes)
+const createPost = (body) =>
+  worker.fetch(
+    new Request('https://platform.example/api/decks', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: ownerCookie },
+      body: JSON.stringify(body),
+    }),
+    env,
+  )
+let editHtmlId
+let editMdId
+await check('text edit: an html deck is spliced in place; only that element changes; the owner view offers the Edit control, others do not', async () => {
+  const SRC = '<!doctype html><html><head><title>Edit Me</title><script>var t="<h1>Gen</h1>"</script></head><body><h1 class="x">Old  title</h1><p>Body <b>text</b></p></body></html>'
+  const created = await readBody(await createPost({ html: SRC, access: 'view' }))
+  editHtmlId = created.data.id
+  const meta = (await readBody(await worker.fetch(new Request('https://platform.example/api/decks', { headers: { cookie: ownerCookie } }), env))).data.decks.find((d) => d.id === editHtmlId)
+  const ownerView = await (await worker.fetch(new Request(`https://platform.example/d/${editHtmlId}`, { headers: { cookie: ownerCookie } }), env)).text()
+  assert(ownerView.includes('id="bento-edit-btn"') && ownerView.includes(`data-v="${meta.updatedAt}"`), 'owner view lacks the Edit control')
+  const anonView = await (await worker.fetch(new Request(`https://platform.example/d/${editHtmlId}`), env)).text()
+  assert(!anonView.includes('bento-edit-btn') && !anonView.includes('/text'), 'non-owner must not get edit UI')
+
+  const ok = await editPost(editHtmlId, { tag: 'h1', oldText: 'Old title', nth: 0, html: 'New <i>title</i>', baseUpdatedAt: meta.updatedAt })
+  const okBody = await readBody(ok)
+  assert(ok.status === 200 && okBody.data.ok && okBody.data.updatedAt, `edit failed: ${okBody.text}`)
+  assert(rawOf(editHtmlId, 'html') === SRC.replace('Old  title', 'New <i>title</i>'), 'source must change by exactly that splice')
+
+  const stale = await editPost(editHtmlId, { tag: 'p', oldText: 'Body text', nth: 0, html: 'x', baseUpdatedAt: meta.updatedAt })
+  assert(stale.status === 409, `stale version: expected 409, got ${stale.status}`)
+  for (const bad of ['<span style="color:red">x</span>', '<script>1</script>', 'x</p><p>y']) {
+    const r = await editPost(editHtmlId, { tag: 'p', oldText: 'Body text', nth: 0, html: bad, baseUpdatedAt: okBody.data.updatedAt })
+    assert(r.status === 422, `${bad}: expected 422, got ${r.status}`)
+  }
+  const gen = await editPost(editHtmlId, { tag: 'h1', oldText: 'Gen', nth: 0, html: 'x' })
+  assert(gen.status === 422, `script-generated text: expected 422, got ${gen.status}`)
+})
+
+await check('text edit: an md deck edit rewrites the source line, follows the derived title, keeps the rest', async () => {
+  const MD = '# Old Heading\n\nA paragraph.\n\n- one\n- two\n'
+  const created = await readBody(await createPost({ md: MD }))
+  editMdId = created.data.id
+  const r = await editPost(editMdId, { tag: 'h1', oldText: 'Old Heading', nth: 0, html: 'New <b>Heading</b>' })
+  assert(r.status === 200, `md edit: ${r.status} ${(await readBody(r)).text}`)
+  assert(rawOf(editMdId, 'md') === '# New **Heading**\n\nA paragraph.\n\n- one\n- two\n', JSON.stringify(rawOf(editMdId, 'md')))
+  const listed = (await readBody(await worker.fetch(new Request('https://platform.example/api/decks', { headers: { cookie: ownerCookie } }), env))).data.decks.find((d) => d.id === editMdId)
+  assert(listed.title === 'New Heading', `derived title should follow the heading, got ${listed.title}`)
+  const li = await editPost(editMdId, { tag: 'li', oldText: 'two', nth: 0, html: 'deux' })
+  assert(li.status === 200 && rawOf(editMdId, 'md').endsWith('- one\n- deux\n'), 'list item edit')
+  const td = await editPost(editMdId, { tag: 'td', oldText: 'x', nth: 0, html: 'y' })
+  assert(td.status === 422, `td: expected 422, got ${td.status}`)
+})
+
+await check('text edit: owner-only, and only html/md decks', async () => {
+  const anon = await editPost(editHtmlId, { tag: 'p', oldText: 'x', nth: 0, html: 'y' }, '')
+  assert(anon.status === 401, `anonymous: expected 401, got ${anon.status}`)
+  const bentoRes = await editPost(deckId, { tag: 'p', oldText: 'x', nth: 0, html: 'y' })
+  assert(bentoRes.status === 400, `bento deck: expected 400, got ${bentoRes.status}`)
+  const bad = await editPost(editMdId, { tag: 'p' })
+  assert(bad.status === 422, `bad body: expected 422, got ${bad.status}`)
+})
+
 // ——— web clip: POST /api/decks {url} fetches + converts to an 'md' deck
 const clipPost = (body) =>
   worker.fetch(
