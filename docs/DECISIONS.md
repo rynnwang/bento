@@ -7171,3 +7171,19 @@ output stores the heuristic clip unchanged. Rejected: asking the model to
 rewrite/return the cleaned Markdown (token cost, drift, truncation on long
 articles). Not verifiable offline — model quality was only checked via a mocked
 binding; judge it on real clips and tune the prompt in `clipclean.ts`.
+
+## 2026-09-25 — Web clipper: real-browser fallback (Browser Rendering) for blocked/JS pages
+
+Production clip of foresttherapyhub.com failed although the same URL clipped
+fine from a developer machine: from Cloudflare's datacenter IPs a host can answer
+with a bot-check interstitial (SiteGround's sgcaptcha: HTTP 202 + a meta refresh)
+instead of the article. `clipUrl` now takes an optional `BrowserRender`
+(`clipBrowser.ts`, the existing `BROWSER` binding) and uses it ONLY when the
+plain fetch fails in a way a browser could fix (block-style status, challenge
+markers, or no readable text — which also covers JS-rendered pages). Chromium
+runs the page's JS, so auto-resolving interstitials clear; images/fonts/media
+are blocked for speed. Interactive captchas/logins are NOT solved: they are
+reported with "save the page as HTML and upload it". Cost: same free 10
+browser-min/day as PDFs, hence fallback-only. Unverifiable from a dev machine
+(the failure only reproduces from CF IPs) — judge by real clips; a site that
+still refuses is simply unclippable by URL.

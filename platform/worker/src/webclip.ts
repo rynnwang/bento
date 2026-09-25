@@ -516,10 +516,19 @@ const MAX_REDIRECTS = 5
 const FETCH_TIMEOUT_MS = 15_000
 
 export class ClipError extends Error {
-  constructor(message: string, readonly status: number) {
+  /** `browserRetry`: a real browser might succeed where the plain fetch could not
+   *  (bot-check interstitial, JS-rendered page, block-style status). */
+  constructor(message: string, readonly status: number, readonly browserRetry = false) {
     super(message)
   }
 }
+
+/** Renders a URL in a real browser and returns the final DOM + URL. Injected so
+ *  this module stays free of puppeteer (see clipBrowser.ts). */
+export type BrowserRender = (url: string) => Promise<{ html: string; url: string }>
+
+const CHALLENGE_RE = /sgcaptcha|cf-browser-verification|challenge-platform|Just a moment\.\.\.|Attention Required|captcha-delivery|px-captcha|_Incapsula_|Checking your browser/i
+export const looksLikeChallenge = (html: string): boolean => html.length < 40_000 && CHALLENGE_RE.test(html)
 
 /** Reject anything that is not a plain public http(s) URL. Workers cannot reach
  *  private ranges anyway; this is cheap defense in depth and clearer errors. */
@@ -596,7 +605,28 @@ async function fetchFollow(start: URL, headers: Record<string, string>, selfHost
   }
 }
 
-export async function clipUrl(raw: string, selfHost?: string): Promise<Clip & { url: string }> {
+/** Fast path first (plain fetch); if that fails in a way a real browser could
+ *  fix — and a renderer is available — retry through it. The browser budget is
+ *  small (free tier), so it is strictly a fallback. */
+export async function clipUrl(raw: string, selfHost?: string, render?: BrowserRender): Promise<Clip & { url: string }> {
+  try {
+    return await clipViaFetch(raw, selfHost)
+  } catch (e) {
+    if (!(e instanceof ClipError) || !e.browserRetry || !render) throw e
+    try {
+      const start = validateClipUrl(raw, selfHost)
+      const page = await render(start.href)
+      const final = validateClipUrl(page.url, selfHost)
+      if (looksLikeChallenge(page.html)) throw new ClipError('The site shows a bot-check (captcha) page even to a real browser, so it can’t be clipped automatically. Open it yourself, save the page as HTML, and upload that file instead.', 502)
+      return { ...htmlToClip(page.html, final.href), url: final.href }
+    } catch (e2) {
+      if (e2 instanceof ClipError && e2 !== e) throw e2
+      throw new ClipError(`${e.message} (A browser-based retry also failed: ${(e2 as Error).message})`, e.status)
+    }
+  }
+}
+
+async function clipViaFetch(raw: string, selfHost?: string): Promise<Clip & { url: string }> {
   const start = validateClipUrl(raw, selfHost)
   let res: Response | null = null
   let url = start
@@ -606,7 +636,7 @@ export async function clipUrl(raw: string, selfHost?: string): Promise<Clip & { 
     await res.body?.cancel()
   }
   if (!res) throw new ClipError("Couldn't fetch that page.", 502)
-  if (!res.ok) throw new ClipError(`The site answered HTTP ${res.status}${RETRY_STATUSES.has(res.status) ? ' (it blocks automated fetches, or the page needs a login)' : ''}.`, 502)
+  if (!res.ok) throw new ClipError(`The site answered HTTP ${res.status}${RETRY_STATUSES.has(res.status) ? ' (it blocks automated fetches, or the page needs a login)' : ''}.`, 502, RETRY_STATUSES.has(res.status) || res.status === 503)
   const ctype = res.headers.get('content-type') ?? ''
   const isHtml = /html|xml/i.test(ctype) || ctype === ''
   const isText = /^text\/(plain|markdown)/i.test(ctype)
@@ -638,9 +668,13 @@ export async function clipUrl(raw: string, selfHost?: string): Promise<Clip & { 
     // a raw .md / .txt URL: store it as-is
     return { title: body.split('\n').find((l) => l.trim())?.replace(/^#+\s*/, '').slice(0, 200) || url.hostname, md: body, url: url.href }
   }
+  // 202 or a small page full of captcha markers = an interstitial, not the article
+  if (res.status === 202 || looksLikeChallenge(body)) {
+    throw new ClipError('The site answered with a bot-check page instead of the article.', 502, true)
+  }
   try {
     return { ...htmlToClip(body, url.href), url: url.href }
   } catch (e) {
-    throw e instanceof ClipError ? e : new ClipError((e as Error).message, 422)
+    throw new ClipError((e as Error).message, 422, true)
   }
 }
