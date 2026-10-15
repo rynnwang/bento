@@ -450,6 +450,11 @@ ${PAGE_STYLES}
   details.optional[open] > summary::before { transform: rotate(90deg); }
   details.optional[open] > summary { margin-bottom: 12px; }
   .opt-tag { font-size: 10.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); border: 1px solid var(--border, #d9d4cb); border-radius: 999px; padding: 2px 8px; }
+  #createCard { position: relative; }
+  .drop-overlay { display: none; position: absolute; inset: 0; z-index: 5; border: 2px dashed var(--accent); border-radius: inherit;
+    background: rgb(250 247 242 / 0.92); align-items: center; justify-content: center; text-align: center;
+    font-size: 17px; font-weight: 600; color: var(--accent); pointer-events: none; }
+  #createCard.dropping .drop-overlay { display: flex; }
   textarea.dragging { border-color: var(--accent); background: var(--bg-elev); box-shadow: 0 0 0 3px rgb(237 130 102 / 0.25); }
   .detected { min-height: 20px; margin: 8px 0 4px; font-size: 13px; color: var(--muted); }
   .detected.ok { color: var(--ok, #3aa86b); }
@@ -717,7 +722,8 @@ ${PAGE_STYLES}
         </div>
       </header>
 
-      <section class="card">
+      <section class="card" id="createCard">
+        <div class="drop-overlay" id="dropOverlay" aria-hidden="true"><div>⬇ Drop a file or link to create a deck</div></div>
         <h2>Create a deck</h2>
         <p class="hint">Paste a <strong>link</strong>, <strong>Markdown</strong>, an <strong>HTML page</strong>, or drop a file
         onto the box — the format is detected from the content. Links are fetched and saved as Markdown (images stay online);
@@ -1677,12 +1683,47 @@ document.getElementById('fileInput').onchange = (e) => {
   loadFile(e.target.files && e.target.files[0])
   e.target.value = '' // lets picking the SAME file again re-fire onchange
 }
+// Drop anywhere on the page while the create form is showing: files go through
+// loadFile (same detection as picking one); a dragged link or selected text lands
+// in the box as text. depth counts nested dragenter/dragleave pairs so the overlay
+// doesn't flicker as the pointer crosses child elements.
 ;(() => {
-  const box = document.getElementById('input')
-  const stop = (e) => { e.preventDefault(); e.stopPropagation() }
-  ;['dragenter', 'dragover'].forEach((t) => box.addEventListener(t, (e) => { stop(e); box.classList.add('dragging') }))
-  ;['dragleave', 'drop'].forEach((t) => box.addEventListener(t, (e) => { stop(e); box.classList.remove('dragging') }))
-  box.addEventListener('drop', (e) => loadFile(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]))
+  const card = document.getElementById('createCard')
+  let depth = 0
+  const formShowing = () => !document.getElementById('wizardWrap').hidden
+  const carries = (e) => {
+    const t = e.dataTransfer && e.dataTransfer.types
+    return !!t && (Array.prototype.indexOf.call(t, 'Files') >= 0 || Array.prototype.indexOf.call(t, 'text/uri-list') >= 0 || Array.prototype.indexOf.call(t, 'text/plain') >= 0)
+  }
+  const hide = () => { depth = 0; card.classList.remove('dropping') }
+  document.addEventListener('dragenter', (e) => {
+    if (!formShowing() || !carries(e)) return
+    e.preventDefault()
+    depth++
+    card.classList.add('dropping')
+  })
+  document.addEventListener('dragover', (e) => {
+    if (!carries(e)) return
+    e.preventDefault() // required, or the drop never fires (and the browser would open the file)
+    if (e.dataTransfer) e.dataTransfer.dropEffect = formShowing() ? 'copy' : 'none'
+  })
+  document.addEventListener('dragleave', () => { if (--depth <= 0) hide() })
+  document.addEventListener('drop', (e) => {
+    if (!carries(e)) return
+    e.preventDefault()
+    hide()
+    if (!formShowing()) return
+    const dt = e.dataTransfer
+    if (dt.files && dt.files.length) { loadFile(dt.files[0]); return }
+    const text = (dt.getData('text/uri-list') || dt.getData('text/plain') || '').trim()
+    if (!text) return
+    // a dragged link may carry "#comment" lines (uri-list format) — keep the first URL
+    const first = text.split(/\\r?\\n/).filter((l) => l && l[0] !== '#')[0] || text
+    pickedFilename = ''
+    document.getElementById('input').value = first
+    afterInputChanged()
+  })
+  window.addEventListener('blur', hide)
 })()
 
 document.getElementById('create').onclick = async () => {
