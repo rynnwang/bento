@@ -208,8 +208,8 @@ node scripts/bento-check.mjs doc.json --json --fail-on warning   # machine-reada
 ```
 
 The loop: write the document JSON (compact where the shell accepts it) → `bento
-check --png` → read `findings` (`text-overflow` says how many px the box is
-short and on which element; `out-of-canvas`, dead links, effects that can
+check --png` → read `findings` (`text-overflow` and `table-overflow` say how
+many px the box is short and on which element; `out-of-canvas`, dead links, effects that can
 never run, unknown keys the gate dropped) → look at `contact.png`, one image of
 every slide, or a single `page-NN.png` when a finding points at it → fix →
 run again. Exit 0 means no finding at or above `--fail-on` (default `error`).

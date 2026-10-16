@@ -17,13 +17,15 @@ import './registry.ts';   // side-effect: every feature module registers itself
 import { i18nApi } from '../../kernel/src/i18n.ts';
 import { openAbout } from './about.ts';
 import { startTheme, setTheme, themeChoice, type ThemeChoice } from '../../kernel/src/theme.ts';
-import { parseDoc, emptyDoc, uid, wordCount, type TypeDoc } from './model.ts';
+import { parseDoc, emptyDoc, uid, wordCount, withoutEmbeddedCaps, type TypeDoc } from './model.ts';
+import { gateRestored } from './restoregate.ts';
 import { Store } from './store.ts';
+import { keepLiveHistory } from './docclass.ts';
 import { Editor } from './editor.ts';
 import { paginate, drawPages, type Metrics } from './paginate.ts';
 import { takeSnapshot, startReview } from './redlineview.ts';
 import { printDocument, buildPrintDocument } from './print.ts';
-import { sign as signDoc, verifyChain, newKey } from './canon.ts';
+import { sign as signDoc, verifyChain, newKey, newHistorySalt, exportPub, historyDisplay, type HistoryLine } from './canon.ts';
 
 // Tell the kernel who this app is — must precede any kernel module use
 // (window title suffix, save-picker label, update manifest).
@@ -231,13 +233,24 @@ const showAbout = () => openAbout({
           : t('That is not a bento/type document: {detail}', { detail: parsed.detail }));
         return;
       }
-      store.replace(parsed.doc);
+      // The paste brings content, never history: this file's revisions and
+      // comments stay as they are (docclass.ts keepLiveHistory).
+      store.replace(keepLiveHistory(store.doc, parsed.doc));
       // store.replace swaps the model; only this rebuilds the paper from it.
       // Without it the document changed and the screen did not — which is what
       // "Replace from JSON…" did on the day it was added.
       editor.render();
       schedule();
     } catch { alert(t('That JSON could not be read.')); }
+  },
+  // A version THIS BROWSER kept — gated, never trusted for identity. See
+  // restoregate.ts for why this is not onReplaceDoc.
+  onRestoreDoc: json => {
+    const doc = gateRestored(json, store.doc);
+    if (!doc) { alert(t('That saved version could not be restored.')); return; }
+    store.replace(doc);
+    editor.render();
+    schedule();
   },
 });
 byId('mark').addEventListener('click', showAbout);
@@ -803,6 +816,16 @@ async function getKey(): Promise<CryptoKeyPair> {
   deviceKey = k;
   return k;
 }
+/** This device's public key, or null if it has never signed. NEVER mints a
+ *  key: painting the Signatures panel must not create a signing key as a side
+ *  effect. (getKey only mints when nothing is saved, and this returns first.) */
+async function devicePub(): Promise<string | null> {
+  if (deviceKey) return exportPub(deviceKey);
+  let saved: string | null = null;
+  try { saved = localStorage.getItem(KEYSTORE); } catch { /* storage blocked */ }
+  if (!saved) return null;
+  return exportPub(await getKey());
+}
 const fingerprint = (pub: string) =>
   pub.replace(/[^a-zA-Z0-9]/g, '').slice(0, 24).match(/.{1,4}/g)!.join(' ').toUpperCase();
 
@@ -813,6 +836,13 @@ document.getElementById('sign')!.addEventListener('click', async () => {
   if (!name) return;
   try { localStorage.setItem('bento-type-name', name); } catch { /* ignore */ }
   const key = await getKey();
+  // The history commitment is salted by the document's own historySalt. The
+  // first signature mints it, in the document, and it is never replaced: every
+  // later signature commits to history under the same salt (canon.ts).
+  if (!store.doc.historySalt) {
+    const salt = newHistorySalt();
+    store.commit(d => { d.historySalt = salt; });
+  }
   const prev = store.doc.signatures[store.doc.signatures.length - 1] ?? null;
   const entry = await signDoc(store.doc, key, { name, prev });
   entry.at = new Date().toISOString();
@@ -820,6 +850,17 @@ document.getElementById('sign')!.addEventListener('click', async () => {
   markDirty(); showTab('sigs'); await paintSigs();
   toast('Signed');
 });
+
+/** Each history line as a LITERAL t() call, so the i18n sweep finds them. */
+function historyLabel(line: HistoryLine): string {
+  switch (line) {
+    case 'matches': return t('History matches what was signed');
+    case 'not-included': return t('This copy doesn’t include the history');
+    case 'elsewhere': return t('History kept on the signer’s copy');
+    case 'changed': return t('The history has changed since you signed — a Snapshot or a trim does this');
+    case 'missing': return t('The history you signed is missing from this document');
+  }
+}
 
 async function paintSigs() {
   const box = document.getElementById('sigsPanel')!;
@@ -835,19 +876,30 @@ async function paintSigs() {
     return;
   }
   const res = await verifyChain(store.doc, sigs);
+  const mine = await devicePub();
   sigs.forEach((s, i) => {
     const r = res.entries[i];
     const card = el('div', 't-card');
-    const state = r.ok && r.linked ? `<span class="t-ok">✓ valid</span>`
+    // ATTESTATION — checked for every signature: is it valid, and is the
+    // content what was signed?
+    const state = r.ok && r.linked ? `<span class="t-ok">${esc(t('✓ valid'))}</span>`
       : (!r.ok && r.why === 'content-changed'
-        ? `<span class="t-bad">✕ the document has changed since this was signed</span>`
-        : !r.linked ? `<span class="t-warn">⚠ not linked to the previous signature</span>`
-        : `<span class="t-bad">✕ invalid signature</span>`);
+        ? `<span class="t-bad">${esc(t('✕ the content has changed since this was signed'))}</span>`
+        : !r.linked ? `<span class="t-warn">${esc(t('⚠ not linked to the previous signature'))}</span>`
+        : `<span class="t-bad">${esc(t('✕ invalid signature'))}</span>`);
+    // HISTORY — shown as a state only where this replica can know it (ruling
+    // (8), canon.ts historyDisplay); someone else's reads neutral.
+    const h = historyDisplay(r.history, mine !== null && s.pub === mine);
+    const label = historyLabel(h.line);
+    const hist = h.tone === 'neutral'
+      ? `<div class="t-note">${esc(label)}</div>`
+      : `<div class="t-note"><span class="${h.tone === 'ok' ? 't-ok' : 't-warn'}">${esc(label)}</span></div>`;
     card.innerHTML =
       `<div class="what" style="font-weight:600">${esc(s.name || 'unnamed')}</div>` +
       `<div class="t-fp">${fingerprint(s.pub)}</div>` +
       `<div class="who" style="margin:5px 0 0">${state}` +
-      `${i > 0 ? ` · after ${esc(sigs[i - 1].name || 'previous')}` : ''}</div>`;
+      `${i > 0 ? ` · ${esc(t('after {name}', { name: sigs[i - 1].name || 'previous' }))}` : ''}</div>` +
+      hist;
     box.appendChild(card);
   });
   // two names on one key is exactly what a signature cannot prove
@@ -923,9 +975,15 @@ function paintTitle() {
 }
 
 async function save(forcePicker = false) {
-  const result = await saveFile(store.doc, forcePicker);
+  // Embeds leave this file without their sharing keys even if one reached the
+  // live document by a path parseDoc never saw (a peer's sync op). The
+  // document's OWN collab is kept — it is this file's.
+  const result = await saveFile(withoutEmbeddedCaps(store.doc), forcePicker);
   if (result === 'cancelled') return;
-  dirty = false;
+  // Clear the dot only for a save of THIS file. 'copied' ("Save a copy…") wrote a
+  // DIFFERENT file, so the open document is still unsaved — keep dirty set (and
+  // paintTitle then shows the unsaved state, not a false "Saved to …").
+  if (result === 'saved' || result === 'saved-as' || result === 'downloaded') dirty = false;
   paintTitle();
 }
 
@@ -1011,7 +1069,7 @@ dirty = false; paintTitle();
   loadDoc: (json: string) => {
     const parsed = parseDoc(json);
     if (!parsed.ok) throw new Error(`bento/type: ${parsed.err === 'empty' ? 'empty document' : parsed.detail}`);
-    store.replace(parsed.doc);
+    store.replace(keepLiveHistory(store.doc, parsed.doc));      // the same rule as Replace from JSON
     editor.render();
     schedule();
     return true;

@@ -16,7 +16,7 @@
 // here on purpose.
 
 import { redline, apply, describe, diffTokens, tokenize } from '../type/src/redline.ts';
-import { sign, verify, newKey, digest } from '../type/src/canon.ts';
+import { sign, verify, newKey, digest, newHistorySalt } from '../type/src/canon.ts';
 import type { Block } from '../type/src/model.ts';
 
 let checks = 0, failures = 0;
@@ -145,8 +145,10 @@ H('a proposal is attributable');
   const key = await newKey();
   const set = redline(A, B, { author: 'counsel' });
   const proposed = apply(A, set, new Set(set.changes.map(c => c.id)));
-  const sig = await sign({ ...proposed, docId: A.docId }, key, { name: 'counsel' });
-  ok((await verify({ ...proposed, docId: A.docId }, sig)).ok, 'the proposed document verifies');
+  // A signed document carries the salt its history commitment is made under.
+  const historySalt = newHistorySalt();
+  const sig = await sign({ ...proposed, docId: A.docId, historySalt }, key, { name: 'counsel' });
+  ok((await verify({ ...proposed, docId: A.docId, historySalt }, sig)).ok, 'the proposed document verifies');
   ok(!(await verify({ ...A, docId: A.docId }, sig)).ok, 'and does not verify against the original');
   const tampered = JSON.parse(JSON.stringify(set));
   const t = tampered.changes.find((c: { kind: string }) => c.kind === 'text');

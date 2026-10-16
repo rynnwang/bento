@@ -11,6 +11,264 @@ pre-1.0.
 
 ## [Unreleased]
 
+- **The Appearance menu no longer offers a font weight.** In About, the
+  light-theme choice was translated as the font weight with the same English
+  name, so it read "Fino" in Portuguese, "Fin" in French and "Leicht" in German.
+  It now reads "Light mode" and "Dark mode", in every language.
+- **Portuguese is Brazilian throughout.** Strings added since the Portuguese
+  catalog arrived had drifted into European Portuguese ("ficheiro", "guardar",
+  "diapositivo", "ecrã", "palavra-passe"). They now match the rest of slides'
+  pt-BR ("arquivo", "salvar", "slide", "tela", "senha").
+
+- **You're told when a deck has no crash backup.** Opened through bento/home,
+  a deck's crash-recovery copy is kept by the app; when a deck is too large for
+  it, the editor now says "Crash recovery is off for this deck — it’s too large
+  to keep a backup copy. Save often." once, where the save status shows, and
+  the unsaved-changes dot stops saying your work is kept in this browser.
+  Encrypted decks are never backed up there, so they never show it.
+
+- **Save a copy no longer makes the original forget its file.** After "Save a
+  copy…", the next ⌘S could ask where to save again, or write the copy instead
+  of the file you were working in. It now saves the original, in place, with no
+  picker (#556, #696).
+
+- **Save a copy keeps you on the original.** "Save a copy…" writes the copy and
+  leaves you editing the file you opened: the toast now says "Copy saved — you
+  are still editing the original" instead of "Saved", and the file name, the
+  unsaved-changes dot and live sharing stay with the original until you save it.
+
+- **A recovered copy that looks older says so.** When the crash-recovery copy
+  this browser kept is older than the file you just opened, the banner now
+  warns "This recovered copy looks older than the file you opened. Keep the
+  file unless you know it’s newer.", with "Keep the file" as the default and
+  "Restore anyway" beside it. Keeping the file leaves the recovered copy in
+  place rather than deleting it, because the two times can come from different
+  devices' clocks.
+
+- **Count-up leaves versions and addresses alone.** On a text box that counts
+  up, a run of digits that isn't a number — a version like `1.2.3`, an address
+  like `192.168.1.1` — used to be animated too and settle rewritten (`1.2.3`
+  became `12.3`). It now stays exactly as typed while the real numbers beside
+  it count up. As before, `12.500` counts as twelve point five and
+  `1.250.000` as one million two hundred and fifty thousand (#584).
+
+- **Indent and outdent bullets.** While editing text, Tab moves the bullet
+  under the caret one level deeper, beneath the one above it, and Shift+Tab
+  moves it back up; select several lines to move them together. This works on
+  lists and on bullets you type with "- ". The Typography panel has matching
+  Outdent and Indent buttons; with nothing open for editing they apply to the
+  whole text box. Tab anywhere else does what it did before. Asked for in
+  discussion #368.
+- **Typing after inline code at the end of a line is plain text again.** In a
+  text box that already ended a line with `code` — one you saved and reopened,
+  or pasted — the caret could only sit inside the code, so everything typed at
+  the end of that line became code too, and no key got you out. Reported in
+  discussion #626.
+- **Connectors in decks written outside the editor now attach.** A deck made
+  by hand or by an AI agent can name the two elements a connector joins
+  without giving it the right endpoints. Until now only the slide on screen was
+  ever re-routed, and only after an edit, so a connector on any other slide sat
+  wherever the file put it — in the thumbnails, the slideshow and the PDF. Every
+  slide's connectors now land on their elements' borders as the deck opens, or
+  is replaced from JSON. Doing so is not an edit: the deck is not marked unsaved
+  and there is nothing to undo. (#493)
+- **A table with rounded corners no longer hides rows.** When a rounded
+  table's rows needed more height than its box, the rows past the bottom were
+  cut off with nothing to say so. They now show, as they always did for a table
+  without rounded corners, and the corners sit on the table's real bottom.
+  Checking a deck (`bento check`, `validate()`) reports a new `table-overflow`
+  warning with how many pixels the box is short. Reported in #494.
+- **The text cursor shows at the start of a line.** While editing a text
+  box, the cursor at the very beginning of a line was hidden under the blue
+  editing frame and the selection box's edge. The frame now sits a few pixels
+  outside the text, and the selection box steps aside while you type, so the
+  cursor is visible wherever it is. The text itself does not move. Reported
+  in #547.
+- **The top bar no longer shifts under your pointer.** Each auto-save's
+  "Saved" note, and the file name beside the deck title appearing or
+  disappearing, used to push the buttons after them sideways — so when you
+  pressed Undo a few times in a row, a click could land on Redo instead. The
+  note now shows over the end of the title, and the file name keeps its place.
+  Reported in #546.
+- **Pasting onto another slide keeps the position.** Copy a logo, a header or
+  any element and paste it onto a different slide, and it lands exactly where
+  it was. It steps down and right only when it would cover the same element
+  (pasting onto the slide you copied from, or pasting twice), so repeated
+  pastes still fan out. Reported in #569.
+
+## [1.2.7] — 2026-10-11
+
+- **One page for PowerPoint, in and out: bento.page/convert.** Drop a
+  `.pptx` to open it as a bento/slides deck, or drop a bento/slides deck (or
+  its document JSON) to save it as PowerPoint. The page detects what you
+  dropped and offers what it can become; there's a sample deck to try. As
+  before, nothing is uploaded: the conversion runs in your browser, and the
+  page only downloads the signed bento/slides release when it makes a deck.
+  bento.page/import now opens this page, so its links keep working. In
+  slides, the Save menu has both ways in: "Import PowerPoint…" opens the page
+  ready for a .pptx, and "Export for PowerPoint…" opens it for this deck's
+  saved file.
+- **Saving as PowerPoint keeps more of your deck.** Speaker notes, links,
+  tables, charts, pictures and hidden slides come across, and now code
+  blocks too (as editable text in Consolas, indentation kept) and embedded
+  documents (as a picture of what they show). WebP pictures are converted to
+  PNG on bento.page/convert. Interactive states come along as hidden slides
+  that their links lead to (untick the box on the page, or pass `--no-states`,
+  to leave them out). After each conversion you get a list of
+  what was approximated or left out, and on which slides: animations show
+  their final frame, Morph becomes a plain cut, formulas stay as their LaTeX
+  source, and code loses its syntax colours. Page numbers stay right after
+  hidden slides. Every export is checked before it is written, so you never
+  get a file PowerPoint wants to repair. From a terminal:
+  `node convert/cli.mjs deck.bento.html --to pptx` (with `--no-states` and
+  `--report r.json`). Export is a page, a library and a command-line tool
+  rather than a button in the app, so every shared file stays small and the
+  app stays focused.
+- **Security: update this file. This release closes further issues found in
+  our own review.** None needs anything from you beyond updating, except one
+  step if you share decks live: **open each shared deck after updating and use
+  Reset access once.** What each issue was is described here once people have
+  had time to update.
+- **An edit made while the deck is saving is no longer marked saved.** Saving
+  takes a moment, and an edit made in that moment — by you, or by someone in a
+  live session — used to be shown as saved while the file on disk was still
+  missing it. The unsaved-changes dot now goes out only when the file holds
+  exactly what is on screen; otherwise it stays on and the next save (or
+  auto-save) writes the edit. ⌘S, auto-save and "Update this file" also wait
+  for each other instead of writing the file at the same time.
+- **Turn text into code without leaving the text box.** Type a fenced block
+  — a line of three backticks (optionally with a language, like ```` ```js ````
+  or ```` ```python ````), your code, and a closing line of three backticks —
+  and when you finish editing it becomes a real Code element: highlighted,
+  with its language set, and able to morph between slides. If the box held
+  only the fence it turns into the Code element in place; text above or below
+  stays as text boxes stacked around it. Pasting fenced text works the same,
+  into a text box or straight onto the slide. Backticks inside the code are
+  kept as typed, and an unclosed fence stays plain text. You can also select
+  one or more lines and press `` ` `` to set them in code style; press it
+  again to undo that.
+- **Ghost Cut: move elements with ⇧⌘X (Ctrl+Shift+X).** The selection fades
+  where it stands instead of disappearing; paste moves it to the pointer — on
+  this slide or another — keeping it the same element, in one undoable step.
+  Escape puts it back. It is also copied, so pasting in another deck works as
+  after ⌘C. Plain ⌘X is unchanged. Thanks to senthan-07 (#679).
+- **Long speaker notes scroll in presenter view.** Notes that are taller than
+  the space beside the current and next slides now get their own vertical
+  scrollbar instead of being cut off.
+- **Dollar amounts next to escaped dollars stay text.** In a line like
+  "$10, and \$x\$", the first dollar could pair with an escaped one and the
+  words between were treated as a formula: the editor flagged them as a
+  formula that failed to render. An escaped `\$` now never opens or closes a
+  formula, inline or display, while an escaped dollar inside a formula still
+  belongs to it.
+- **Copy several slides at once.** With several slides selected in the
+  sidebar, ⌘C (or Copy in the context menu) now copies all of them, in deck
+  order, ready to paste into any deck; it used to copy only the current
+  slide. Interactive states stay behind for now, since a pasted state would
+  arrive as an ordinary slide cut off from its parent. Thanks to tikurahul
+  (#615).
+- **Screen readers announce what each Save-as and Share command does.** The
+  menus keep one-line rows with the description on hover, and the same text
+  is now read out as the command's description; the Save-as list scrolls when
+  a short window cannot hold it. The Share menu's actions are plain rows like
+  Save as, rather than a stack of boxed buttons. Dialog
+  titles are a little smaller (17px), keyboard shortcuts in the help sheet are
+  set in the interface font and line up on the right, and keyboard focus
+  draws a clear amber ring. Also fixed: the Save caret's ▾ vanished at
+  medium window widths, rows in the phone ⋯ menu were centred, and menus in
+  the dark theme cast a navy shadow that did not show.
+- **Save is the top bar's primary button; the bar's other buttons line up.**
+  Save and its save-as caret are now filled with the text colour, like the
+  primary buttons in dialogs, in light and dark themes. The amber
+  unsaved-changes dot has a dark ring so it still shows on the light fill of
+  the dark theme. The ? help button is now the same 36×30 as its neighbours
+  (it was 28×29). The bento/slides wordmark is a real button: it can be
+  reached with Tab, Enter opens About, screen readers name it, and on a phone
+  it is a 44px target. Switching the interface language no longer leaves the
+  old top bar's resize listener, size observer and menu listeners running
+  behind the new one. Found by spaces' top-bar parity check (#567).
+
+## [1.2.6] — 2026-10-04
+
+- **Open a PowerPoint deck in Bento: bento.page/import.** Drop a `.pptx` on
+  the page and get back a `.bento.html` deck you can edit and present. The
+  conversion runs in your browser and the deck is never uploaded. The page
+  fetches only the current signed slides release to build on, checks its
+  signature and fingerprint, and refuses anything that fails. Before you
+  download, it shows what was carried over, what was approximated and what
+  was left out. Tables and charts become marked placeholders for now.
+  The same conversion runs from a terminal as
+  `node convert/cli.mjs deck.pptx`.
+- **Save as → Import PowerPoint…** The Save-as menu has an entry next to
+  Replace from JSON that opens that importer (bento.page/import) in a new tab.
+  It needs an internet connection, and the entry's tooltip says so.
+- **Security: update this file. This release closes further issues found in
+  our own review.** None needs anything from you beyond updating. What each one
+  was is described here once people have had time to update.
+- **Undo can no longer reverse Stop sharing, Reset access or Duplicate as new
+  deck.** Undoing an edit made before one of those used to bring back the old
+  sharing settings, which could restore access you had just removed from a
+  collaborator. **If you have used Reset access on a shared deck, update and
+  then reset access again** to be sure the change stuck.
+- **A hand-written or AI-written deck no longer gets stuck on the loading
+  screen.** A document that left out a required part — the theme, the page
+  size, a slide's background, or an element's content — opened to the splash
+  screen and stayed there. It now opens: the missing parts take the editor's
+  defaults, anything that was given is kept, and an element with nothing to
+  show is left out.
+- **A view-only or audience copy opened inside the editor stays view-only.**
+  Dropping an audience copy (the hand-out for a live show) onto an open deck,
+  or loading one by script, used to offer "Invite to edit…", "Go live" and
+  "Reset access…" and call you an Editor; a read-only copy opened the same way
+  could be edited. Both are now locked, the same as when you open them
+  directly. The live session never accepted their changes; now the editor
+  agrees.
+- **Pictures a collaborator adds now appear in a read-only live copy.** Large
+  pictures travel through the live session separately from the deck, and a
+  read-only viewer showed them as blank boxes. They now load like everything
+  else.
+- **A copy edited offline catches up every tab opened later.** When a copy
+  you edited offline reconnected, its changes reached the collaborators online
+  at that moment; a tab opened afterwards on the same computer could miss them.
+  It now receives them too.
+
+## [1.2.5] — 2026-09-28
+
+- **Security: update this file. This release closes three security issues
+  found in our own review.** None needs anything from you beyond updating.
+  - **A slide could quietly phone home when opened.** A deck carrying a vector
+    drawing could, through a corner of the styling it is allowed to use, make
+    your browser fetch a web address the author chose the moment the slide was
+    shown — a silent read receipt with your IP and the time you opened it, the
+    very thing a self-contained file is meant not to do. No code ran and
+    nothing looked wrong on screen; every route that carries a drawing (a
+    mailed file, a paste, a live edit) could carry it. Drawing styles are now
+    checked by the browser's own parser instead of by pattern-matching, so the
+    disguises that slipped past — an address written with escape codes, or as
+    one of CSS's image functions — no longer do.
+  - **Another local file could hijack "Restore your unsaved changes."** On a
+    desktop browser, local files opened from disk share one storage area (the
+    same quirk behind the 1.2.2 fix). A malicious `.bento.html` opened from
+    disk could plant a fake recovery snapshot for one of your decks; the next
+    time you opened that deck, the "Restore your unsaved changes?" prompt would
+    offer it, and restoring it could move the deck into a live session the
+    attacker controlled — later edits syncing to them, their keys written into
+    your file on save. Restored snapshots now pass through the same safety
+    check as pasted JSON, and the deck's identity and live-session keys always
+    come from the real file, never from a snapshot.
+  - **A malformed Office file could freeze the tab.** Importing a crafted
+    `.pptx` or `.xlsx` (bento/slides' import page, bento/dash's spreadsheet
+    import) could exhaust memory and hang the browser: a tiny compressed part
+    that expands without bound. Imports now stop unpacking a part the moment it
+    grows past its declared size, so a decompression bomb is refused instead of
+    swallowing the tab.
+- **Orange text can be read in dark mode again.** The armed comment tool, the
+  tick beside your language, your own name in a comment thread and the labels
+  on slide and point comments were drawn in a dark brown meant for text on the
+  orange, on dark panels where it all but vanished. They now use a lighter
+  gold, and the comment labels on a slide carry a soft halo so they read on
+  any slide, light or dark, in either theme.
+
 ## [1.2.4] — 2026-09-25
 
 - **Formulas that stayed as raw text now render.** 1.2.0 replaced the maths

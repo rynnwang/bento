@@ -47,6 +47,29 @@ export function readEmbeddedDoc(): string | null {
 }
 
 /**
+ * The `#bento-doc` body from an HTML string — the file as bytes, not the live
+ * DOM — so a handle's current file can be checked against the open document
+ * without a parser (it runs in the launch consumer AND in a node rig). This proves
+ * SAME DOCUMENT (an identical #bento-doc body), NOT same file: a copy re-saved with
+ * a different surrounding shell still matches, which is exactly what the launch
+ * check wants. Anchored by indexOf on the exact id attribute — double-quoted as the
+ * DOM serializes it, with a LEADING SPACE so it can never match a `data-id`
+ * lookalike — which is linear, where a regex over an unterminated `<script` is
+ * quadratic. CRLF is normalised so a file saved with CRLF line endings still
+ * compares equal. The body is <-escaped at write time so it can never itself
+ * contain the close tag. null if there is no block. */
+const DOC_BLOCK_ID_ATTR = ` id="${DATA_BLOCK_ID}"`
+export function embeddedDocBlock(html: string): string | null {
+  const at = html.indexOf(DOC_BLOCK_ID_ATTR)
+  if (at < 0) return null
+  const start = html.indexOf('>', at + DOC_BLOCK_ID_ATTR.length)
+  if (start < 0) return null
+  const end = html.indexOf(SCRIPT_CLOSE, start + 1)
+  if (end < 0) return null
+  return html.slice(start + 1, end).replace(/\r\n/g, '\n').trim() || null
+}
+
+/**
  * Extra plaintext blocks the app wants written into every saved shell —
  * language packs today (docs/i18n-packs.md), whatever else later. The kernel
  * stays ignorant of what they mean: it is told an id, a type and a JSON body,
@@ -475,11 +498,18 @@ export async function decryptEnvelope(env: EncEnvelope, password: string): Promi
  * Encryption-aware serialization into an arbitrary shell — THE path for
  * saves and self-updates. Plain when no password is active.
  */
+/**
+ * The exact bytes that go INTO `#bento-doc`: the document JSON when no password
+ * is active, or the `bento/enc` envelope over that JSON when one is. This is the
+ * payload a save writes — the shell (serializeBody) is furniture around it — and
+ * it is DOM-free, so it is the seam a rig can drive the real write path with.
+ */
+export async function encodeDocBody(doc: KernelDoc): Promise<string> {
+  return encPassword ? encryptBody(JSON.stringify(doc), encPassword) : JSON.stringify(doc)
+}
+
 export async function serializeDocInto(shell: Document, doc: KernelDoc): Promise<string> {
-  const body = encPassword
-    ? await encryptBody(JSON.stringify(doc), encPassword)
-    : JSON.stringify(doc)
-  return serializeBody(shell, body, doc)
+  return serializeBody(shell, await encodeDocBody(doc), doc)
 }
 
 /** Encryption-aware serializeFile. */
@@ -495,10 +525,11 @@ export function suggestedFileName(doc: KernelDoc, suffix = ''): string {
 
 // --- writing to disk --------------------------------------------------------
 
-type SaveResult = 'saved' | 'saved-as' | 'downloaded' | 'cancelled'
+type SaveResult = 'saved' | 'saved-as' | 'copied' | 'downloaded' | 'cancelled'
 
 interface FsFileHandle {
   createWritable(): Promise<{ write(data: Blob): Promise<void>; close(): Promise<void> }>
+  getFile?(): Promise<{ text(): Promise<string> }>
   name: string
 }
 
@@ -683,18 +714,27 @@ function handleDb(): Promise<IDBDatabase> {
     req.onerror = () => reject(req.error)
   })
 }
-async function idbHandle(op: 'get' | 'put' | 'delete', docId: string, val?: unknown): Promise<unknown> {
+async function idbHandle(op: 'get' | 'put' | 'delete', key: string, val?: unknown): Promise<unknown> {
   const db = await handleDb()
   try {
     return await new Promise((resolve, reject) => {
       const tx = db.transaction(HANDLE_STORE, op === 'get' ? 'readonly' : 'readwrite')
       const store = tx.objectStore(HANDLE_STORE)
-      const r = op === 'get' ? store.get(docId) : op === 'put' ? store.put(val, docId) : store.delete(docId)
+      const r = op === 'get' ? store.get(key) : op === 'put' ? store.put(val, key) : store.delete(key)
       r.onsuccess = () => resolve(op === 'get' ? r.result : undefined)
       r.onerror = () => reject(r.error)
     })
   } finally { db.close() }
 }
+
+/** The store key for one FILE's handle. A copy shares its origin's docId
+ *  ("Save a copy…" is the same deck, same live session), so keying by docId
+ *  ALONE let the last-saved file evict the other's handle: saving a copy
+ *  overwrote the original's entry, and reopening the original then fell back to
+ *  the picker (#556). Keying by docId AND file name gives each file its own
+ *  entry — correct whichever deck "Save a copy…" leaves open, because it keys
+ *  by the file that was actually written. U+001F can't occur in a file name. */
+const handleKey = (docId: string, name: string) => `${docId}\u001f${name}`
 
 /** A FileSystemFileHandle with the permission methods (not in every lib.dom). */
 type PermHandle = FsFileHandle & {
@@ -714,9 +754,10 @@ const isRealHandle = (h: unknown): h is PermHandle =>
  *  There a persistent grant has no identity to bind to, so it is not offered;
  *  the per-session handle still works. Real web origins and real-origin host
  *  apps (isolated storage) persist as normal. */
-async function persistHandle(doc: KernelDoc, handle: FsFileHandle): Promise<void> {
+export async function persistHandle(doc: KernelDoc, handle: FsFileHandle): Promise<void> {
   if (sharedStorageOrigin() || !doc.docId || !isRealHandle(handle)) return
-  try { await idbHandle('put', doc.docId, handle) } catch { /* best effort — a lost handle just means tomorrow's picker */ }
+  // Per FILE (docId + name), not per docId — see handleKey (#556).
+  try { await idbHandle('put', handleKey(doc.docId, handle.name), handle) } catch { /* best effort — a lost handle just means tomorrow's picker */ }
 }
 
 /**
@@ -739,22 +780,33 @@ export async function reconnectHandle(doc: KernelDoc): Promise<FsFileHandle | nu
   // the planted-entry path. Real, isolated origins reconnect as normal.
   if (sharedStorageOrigin()) return null
   if (!doc.docId) return null
-  let stored: unknown
-  try { stored = await idbHandle('get', doc.docId) } catch { return null }
-  if (!isRealHandle(stored)) return null // absent, or a host polyfill handle
-  // the remembered handle must be the file on screen: docId + name. isSameEntry
-  // needs a second handle we do not have on a bare file:// reopen, so the name
-  // check is the guard.
+  // The remembered handle must be the file ON SCREEN, and the only check we have
+  // on a bare reopen is its NAME (isSameEntry needs a second handle we do not
+  // have). With no name on screen — the hosted app, nothing open — there is
+  // nothing to verify against, so we do NOT reconnect: reading a docId-only entry
+  // unchecked could re-permission a handle to a different file. A real reopen
+  // always has a name.
   const onScreen = openedFileName()
-  if (onScreen && stored.name !== onScreen) return null // mismatch → picker, entry kept
+  if (!onScreen) return null
+  // Primary key is per FILE (docId + name). Fall back to the legacy docId-only
+  // key for entries written before #556 — the name guard below validates it too,
+  // so the fallback is no weaker than the primary.
+  let key = handleKey(doc.docId, onScreen)
+  let stored: unknown
+  try {
+    stored = await idbHandle('get', key)
+    if (!isRealHandle(stored)) { key = doc.docId; stored = await idbHandle('get', key) }
+  } catch { return null }
+  if (!isRealHandle(stored)) return null // absent, or a host polyfill handle
+  if (stored.name !== onScreen) return null // mismatch → picker, entry kept
   try {
     let perm = await stored.queryPermission({ mode: 'readwrite' })
     if (perm !== 'granted') perm = await stored.requestPermission({ mode: 'readwrite' })
     if (perm === 'granted') return stored
-    void idbHandle('delete', doc.docId) // denied → forget it, use the picker
+    void idbHandle('delete', key) // denied → forget it, use the picker
     return null
   } catch { // NotFoundError (file moved/deleted) or any handle failure
-    void idbHandle('delete', doc.docId)
+    void idbHandle('delete', key)
     return null
   }
 }
@@ -777,10 +829,17 @@ export async function saveFile(doc: KernelDoc, forcePicker = false): Promise<Sav
     if (forcePicker || !fileHandle) {
       // forcePicker is only ever "Save a copy…"; a first save of an unsaved
       // document is in-place by intent even though it must also pick.
-      const handle = await pickHandle(doc, '', undefined, forcePicker ? 'copy' : 'in-place')
+      const isCopy = forcePicker
+      const handle = await pickHandle(doc, '', undefined, isCopy ? 'copy' : 'in-place')
       if (!handle) return 'cancelled'
-      fileHandle = handle
       await writeHandle(handle, html)
+      // "Save a copy…" keeps the open deck on the ORIGINAL (maintainer ruling,
+      // 2026-10-15): the copy is written, but the editor's handle stays with the
+      // original and the copy is NOT remembered as this doc's handle — so the
+      // next ⌘S still targets the original and reopening it still reconnects.
+      // Only a first in-place save retargets onto the file it just created.
+      if (isCopy) return 'copied'
+      fileHandle = handle
       void persistHandle(doc, handle)
       return 'saved-as'
     }
@@ -813,6 +872,60 @@ export const currentFileName = () => fileHandle?.name ?? null
 export function adoptFileHandle(handle: FsFileHandle): void {
   fileHandle = handle
 }
+
+/**
+ * Consume the File Handling API's `window.launchQueue` at boot and adopt the
+ * handle it delivers for the open document — so a document opened in an installed
+ * PWA (`file_handlers`) or in a native host (home/bridge.js, which defines a
+ * `launchQueue` carrying the open file's handle) holds a writable handle from the
+ * FIRST edit, not only after the first ⌘S. Without this a reviewer who edits,
+ * leaves the app and reopens the file sees nothing saved — "saved in place" is the
+ * app's whole claim.
+ *
+ * The queue is the host's single trigger: `setConsumer` is what begins the one
+ * launch request (`launch: true`), and the host answers it with the open document
+ * and no picker — a host that cannot (a read-only document) refuses it and vends
+ * nothing, so we adopt only when a handle actually arrives. Persistence is not
+ * done here: a native host re-delivers every launch, and a real PWA handle is
+ * persisted by the ordinary save path (`persistHandle`, which skips host
+ * polyfills). Calling `setConsumer` more than once is the API's own error, so this
+ * is guarded to run once.
+ */
+export function consumeLaunchQueue(): void {
+  const w = globalThis as unknown as {
+    launchQueue?: { setConsumer?: (fn: (params: { files?: FsFileHandle[] }) => void) => void }
+  }
+  const lq = w.launchQueue
+  if (!lq || typeof lq.setConsumer !== 'function') return
+  // The open document's #bento-doc, captured now (boot, before any edit), CRLF
+  // normalised to match embeddedDocBlock. The handle we adopt must still hold THIS
+  // document: a host bug that vends the wrong file would otherwise have the first
+  // autosave silently overwrite it.
+  const booted = readEmbeddedDoc()?.replace(/\r\n/g, '\n') ?? null
+  try {
+    lq.setConsumer(async (params) => {
+      const handle = params?.files?.[0]
+      if (!handle || !booted || typeof handle.getFile !== 'function') return
+      try {
+        const text = await (await handle.getFile()).text()
+        // Adopt only if the file is still this document AND nothing claimed a handle
+        // while we awaited getFile: a Save As / "Duplicate as new deck" during that
+        // await sets its own handle, and snapping back to the launched file here
+        // would have autosave overwrite the file the user just moved to.
+        if (!hasFileHandle() && embeddedDocBlock(text) === booted) adoptFileHandle(handle)
+        // else: a different/unverifiable file, or a handle already held — leave it;
+        // ⌘S falls back to the picker.
+      } catch { /* unreadable handle → do not adopt */ }
+    })
+  } catch { /* setConsumer rejects a second registration — the first already won */ }
+}
+
+// At boot, in a browser context, claim the open document's handle. A module-level
+// call is deliberate: it keeps the seam in the kernel, so every app gets it with
+// no per-app change, and it is the consumer's job to begin the launch request.
+// node (rigs, tooling) has no `launchQueue`; a plain, non-installed tab has none
+// either — both no-op. The rig drives consumeLaunchQueue() directly.
+if (typeof window !== 'undefined') consumeLaunchQueue()
 
 /**
  * The name of the file this document is actually open AS, when knowable.

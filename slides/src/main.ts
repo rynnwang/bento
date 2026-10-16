@@ -20,9 +20,17 @@ import { i18nApi, t, applyDirection } from './i18n'
 import { parseDoc, type BentoDoc, type TextElement } from './model'
 import { compactJson } from './compact'
 import { parseDocInputReport, fitAutoHeights, restack, type LoadReport } from './compactload'
+import { guardOpenedDoc } from './restoregate'
+import type { Dropped } from './untrusted'
+
+/** Say on the console what the open-file guard neutralised, if anything. */
+function reportGuard(dropped: Dropped[]) {
+  if (dropped.length) console.info('[bento] opened file: neutralised', dropped)
+}
 import { validateDoc, type ValidateOpts } from './validate'
 import { buildSchema } from './schema'
 import { resolveThemeRefs } from './palette'
+import { routeAllConnectors } from './connectors'
 import { measureText, measureElement, type TextMeasureSpec } from './measure'
 import { starterDoc } from './starterdeck'
 import { injectFonts } from './fonts'
@@ -81,6 +89,9 @@ if (envelope) {
   void passwordGate()
 } else {
   const parsed = embedded ? parseDoc(embedded) : null
+  // the file's own document, guarded by value, keys and identity kept
+  // (restoregate.ts guardOpenedDoc — a file may be from a newer Bento)
+  if (parsed) reportGuard(guardOpenedDoc(parsed))
   // Whether this is OUR starter or someone's document is knowable only here —
   // downstream the two are indistinguishable, and the difference is what stops
   // the return gate appearing over real work.
@@ -118,6 +129,7 @@ async function passwordGate() {
       err.textContent = t('Wrong password — try again')
       return
     }
+    reportGuard(guardOpenedDoc(doc)) // the password proves who can read it, not what it holds
     setEncryptionPassword(pass) // saves + updates keep writing encrypted
     gate.remove()
     bootWith(doc)
@@ -137,6 +149,12 @@ function bootWith(doc: BentoDoc, docIsFresh = false) {
   // re-derives through the editor's `doc` hook; nothing else would visit a
   // player file at all.
   resolveThemeRefs(doc)
+  // Same reason, connectors (#493): a hand- or agent-written deck can name a
+  // connector's from/to elements with endpoints that are stale or placeholder.
+  // The editor re-routes on edits, but nothing routed a slide nobody touched,
+  // and a player or audience file never meets the editor at all. Derived, not
+  // an edit: it does not dirty the deck or make an undo step.
+  routeAllConnectors(doc)
   if (doc.collab?.role === 'audience') audienceMode(doc)
   else if (doc.readonly) playerMode(doc)
   else editorMode(doc, docIsFresh)
@@ -352,7 +370,9 @@ dismissSplash()
    * AI/tooling round-trip: replace the whole document from a JSON string
    * (the contents of #bento-doc, or a COMPACT document — `"compact": true`
    * with defaults omitted, nested element arrays and missing ids allowed; see
-   * src/compact.ts). Validates via parseDoc; returns false and changes
+   * src/compact.ts). The input passes the untrusted document gate (unknown or
+   * malformed fields are dropped and listed in the report) and keeps the open
+   * deck's docId, live session and file mode; returns false and changes
    * nothing on invalid input. Undoable in the editor.
    *
    * On success returns the LOAD REPORT (truthy, so `if (loadDoc(j))` still
@@ -363,7 +383,10 @@ dismissSplash()
    * An agent's loop: load → read dropped/findings → fix → load again.
    */
   loadDoc(json: string): LoadReport | false {
-    const parsed = parseDocInputReport(json)
+    // foreign input, gated like "Replace from JSON…"; it replaces the OPEN
+    // deck's content, so the open deck's identity (docId, collab, readonly)
+    // is kept — see compactload.ts
+    const parsed = parseDocInputReport(json, { live: store.doc })
     if (!parsed) return false
     store.replaceDoc(parsed.doc)
     // Heights measured while a deck font was still downloading are measured

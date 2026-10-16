@@ -21,6 +21,7 @@ import {
   SyncEngine,
   SYNC_V,
   BLOB_INLINE_MAX,
+  DOC_NODE,
   type BlobRef,
   type CollabCreds,
   type Op,
@@ -32,7 +33,7 @@ import {
 // every consumer meets them through the session.
 export type { BlobRef, CollabCreds, SyncDoc }
 import { putBlob, getBlob, dataUriToBytes, bytesToDataUri, encodedSize, MAX_BLOB } from './blobs.ts'
-import { mintCollab } from './online.ts'
+import { mintCollab, cachedMemberPub } from './online.ts'
 import { lsGet, lsJson } from '../storage.ts'
 
 /**
@@ -405,6 +406,18 @@ export class SyncSession {
   /** a restored offline fork still owes the room its snapshot */
   private forkPending = false
 
+  /**
+   * This replica carries offline-fork contributions that live only in its doc
+   * VALUES + restored registers, never as replayable log ops. `forkPending`
+   * drives the ONE broadcast at our own hello and is cleared once the relay has
+   * our server snapshot; this stays set for the session, because a peer that
+   * joins LATER still can't learn those contributions from the log. Online late
+   * joiners recover from the relay's server snapshot, but a same-machine tab
+   * joins over BroadcastChannel, which has no replay — so we re-snap each new
+   * peer while this holds (see onFrame 'hello').
+   */
+  private carriesForkState = false
+
   /** the loaded doc arrived carrying collab creds (was saved/shared) */
   private bornWithCollab = false
   /** the user opted in this session (saved, or hit "Start live session") */
@@ -444,6 +457,7 @@ export class SyncSession {
       // merge the fork BOTH ways (see docs/collab-design.md)
       this.state = this.host.engine.fromJSON(this.actor, JSON.parse(JSON.stringify(saved)))
       this.forkPending = true
+      this.carriesForkState = true
     } else {
       // no saved state, or state from the pre-composite-key era (v1) — that
       // scheme collapsed same-id-on-many-slides, so it is discarded and the
@@ -584,10 +598,15 @@ export class SyncSession {
           ? await getBlob({ base: creds.base, room: creds.room, tok: creds.tok }, creds.rawKey, ref.key)
           : null
         if (!bytes) { this.notify('blob-unavailable', k); continue }
-        this.store.commit(() => {
-          const d = this.store.doc
-          ;(d.assets ??= {})[k] = bytesToDataUri(bytes, ref.mime)
-        })
+        // Land the materialised asset the way a REMOTE OP does — mutate the doc
+        // and emit the store's change events, NOT store.commit. A read-only
+        // live-viewer copy no-ops commit (store.readOnly), so going through it
+        // left relay-offloaded images blank for readers; assets are local
+        // content-addressed bytes (never an op), so the differ sends nothing
+        // either way and the shadow needs no update.
+        const d = this.store.doc
+        ;(d.assets ??= {})[k] = bytesToDataUri(bytes, ref.mime)
+        for (const ev of this.host.changeEvents) this.store.emit(ev)
       } finally {
         this.fetching.delete(ref.key)
       }
@@ -665,15 +684,11 @@ export class SyncSession {
     console.error('[bento-sync] diff failed; recovering via snapshot', err)
     this.shadow = JSON.stringify(this.store.doc)
     this.forkPending = true
+    this.carriesForkState = true
     try {
-      // inlined rather than this.snapshot() — that calls flush(), and flush()
-      // is our caller
-      this.broadcast({
-        t: 'snap',
-        a: this.actor,
-        doc: this.snapshotDoc(),
-        state: JSON.parse(JSON.stringify(this.state.toJSON())),
-      })
+      // snapshotPair() rather than this.snapshot() — that calls flush(), and
+      // flush() is our caller
+      this.broadcast({ t: 'snap', a: this.actor, ...this.snapshotPair() })
     } catch (e2) {
       // snapshot itself failed (state unserializable) — the shadow is still
       // advanced, so editing continues and the next reconnect retries
@@ -688,6 +703,7 @@ export class SyncSession {
     if (f.a === this.actor) return
     switch (f.t) {
       case 'hello': {
+        const newcomer = !this.peersMap.has(f.a)
         this.touchPeer(f.a, f.p)
         // answer so the newcomer learns us + catch them up from our log,
         // AND tell them our vv so ops they minted before connecting (which
@@ -696,6 +712,16 @@ export class SyncSession {
         this.send({ t: 'need', a: this.actor, vv: this.state.vv })
         const missing = this.state.missingFor(this.log, f.vv)
         if (missing.length) this.send({ t: 'ops', a: this.actor, ops: missing })
+        // A fork's offline contributions aren't in the log — the log catch-up
+        // above can't convey them. We snapshot them ONCE at our own hello, which
+        // a peer that joins LATER misses; re-send to each genuinely new peer so
+        // a same-machine tab opened later (BroadcastChannel has no replay) still
+        // merges our fork. Online peers also get it from the relay snapshot; the
+        // merge is idempotent, so a duplicate is harmless.
+        if (newcomer && this.carriesForkState) {
+          const s = this.snapshot()
+          this.send({ t: 'snap', a: this.actor, doc: s.doc, state: s.state })
+        }
         break
       }
       case 'ops':
@@ -787,7 +813,9 @@ export class SyncSession {
       else if (c.v === 2 && c.ownerPriv) { role = 'owner'; pub = c.owner }
       else if (c.v === 2 && c.invite) {
         role = 'editor'
-        pub = lsJson<{ pub?: string } | null>(`bento-member-${this.store.doc.docId}`, null)?.pub
+        // the identity this page resolved first; the stored pubkey otherwise
+        pub = cachedMemberPub(this.store.doc.docId) ??
+          lsJson<{ pub?: string } | null>(`bento-member-${this.store.doc.docId}`, null)?.pub
       } else if (c.writerPriv) { role = 'editor'; pub = c.writerPub }
     }
     const where = this.host.presence()
@@ -991,6 +1019,15 @@ export class SyncSession {
    */
   private snapshotDoc(): SyncDoc {
     const doc = JSON.parse(JSON.stringify(this.store.doc)) as SyncDoc
+    // A snapshot is readable by EVERY room-key holder, readers included, but the
+    // live doc carries this device's whole collab block (owner / writer private
+    // keys, invite material). So every never-synced field leaves the snapshot:
+    // the engine's skipDoc set, unconditionally and map-independently, apart
+    // from the structural container. Receivers lose nothing — mergeSnapshot only
+    // copies keys that have a register, and skipDoc keys never get one.
+    const skip = this.state.S.skipDoc
+    const rec = doc as unknown as Record<string, unknown>
+    for (const k of Object.keys(rec)) if (skip.has(k) && k !== this.state.S.parents) delete rec[k]
     const assets = doc.assets
     if (assets)
       for (const [k, v] of Object.entries(assets))
@@ -998,13 +1035,32 @@ export class SyncSession {
     return doc
   }
 
+  /** The sync state as a snapshot may carry it: the doc-level registers of every
+   *  key snapshotDoc() strips are dropped too — a register whose value is missing
+   *  from the snapshot doc would read to a receiver's mergeSnapshot as a DELETE. */
+  private snapshotState(): SyncStateJSON {
+    const j = JSON.parse(JSON.stringify(this.state.toJSON())) as SyncStateJSON
+    const skip = this.state.S.skipDoc
+    const regs: SyncStateJSON['regs'] = {}
+    for (const [rk, r] of Object.entries(j.regs ?? {})) {
+      if (rk.startsWith(`${DOC_NODE} `) && skip.has(rk.slice(DOC_NODE.length + 1))) continue
+      regs[rk] = r
+    }
+    j.regs = regs
+    return j
+  }
+
+  /** THE snapshot builder. Every path that sends a snapshot off this peer — the
+   *  relay upload (snapshot()), the hello re-snap, the fork broadcast, and the
+   *  flush-time fork snap — builds from this and from nothing else. */
+  private snapshotPair(): { doc: SyncDoc; state: SyncStateJSON } {
+    return { doc: this.snapshotDoc(), state: this.snapshotState() }
+  }
+
   /** current (doc, sync-state) pair for an encrypted relay snapshot */
   snapshot(): { doc: SyncDoc; state: SyncStateJSON } {
     this.flush()
-    return {
-      doc: this.snapshotDoc(),
-      state: JSON.parse(JSON.stringify(this.state.toJSON())),
-    }
+    return this.snapshotPair()
   }
 
   /** How many inline assets are still awaiting blob offload — over
@@ -1029,7 +1085,15 @@ export class SyncSession {
     const view = this.host.captureView?.()
     try {
       const res = this.state.mergeSnapshot(this.store.doc, rdoc, rstate)
-      if (res.changed) this.afterRemoteChange(true, view)
+      if (res.changed) {
+        this.afterRemoteChange(true, view)
+        // We absorbed register-only state a snapshot carried — it isn't in our
+        // log, so a peer that joins later can't learn it from our catch-up. Carry
+        // it onward: re-snap new peers too (bounded once-per-peer, see 'hello').
+        // This is what converges a 3-tab offline chain (A forks, B merges A, C
+        // joins asking B) over replay-less BroadcastChannel.
+        this.carriesForkState = true
+      }
     } finally {
       this.applying = false
     }

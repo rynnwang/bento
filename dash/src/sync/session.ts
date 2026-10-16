@@ -22,8 +22,8 @@
 
 import type { Store, Patch } from '../store.ts'
 import type { DashDoc } from '../model.ts'
-import { DashSync, SYNC_V, committable, type Op, type SyncStateJSON } from './crdt.ts'
-import { collabOf, mintCollab, type CollabBlock } from './online.ts'
+import { DashSync, SYNC_V, DOC_NODE, LOCAL_ONLY_DOC_KEYS, committable, type Op, type SyncStateJSON } from './crdt.ts'
+import { collabOf, copyCanWrite, mintCollab, type CollabBlock } from './online.ts'
 import { lsGet, lsJson } from '../../../kernel/src/storage.ts'
 
 export interface PresenceInfo {
@@ -185,7 +185,7 @@ export class SyncSession {
   private async ensureCollab() {
     if (this.store.doc.collab) return
     const creds = await mintCollab()
-    if (!this.store.doc.collab) this.store.doc.collab = creds
+    if (!this.store.doc.collab) { this.store.doc.collab = creds; this.store.touch() }
   }
 
   // --- the patch tap --------------------------------------------------------
@@ -392,7 +392,9 @@ export class SyncSession {
     let pub: string | undefined
     let role: 'owner' | 'editor' | 'viewer' | undefined
     if (c) {
-      if (c.role === 'reader') role = 'viewer'
+      // a copy that cannot write is a Viewer whatever keys it carries — an
+      // audience copy holds an owner-signed invite, and was called an Editor
+      if (!copyCanWrite(c)) role = 'viewer'
       else if (c.v === 2 && c.ownerPriv) { role = 'owner'; pub = c.owner }
       else if (c.v === 2 && c.invite) {
         role = 'editor'
@@ -479,11 +481,28 @@ export class SyncSession {
 
   // --- snapshots (online catch-up + file-fork merge) ------------------------
 
+  /**
+   * THE snapshot builder: the relay upload (online.ts getSnapshot) and the fork
+   * snap frame (shipSnapshot) both take theirs from here and nowhere else.
+   *
+   * A snapshot is readable by EVERY room-key holder, readers included, but the
+   * live doc carries this device's whole collab block (owner / writer private
+   * keys, invite material). So every never-synced top-level field leaves the
+   * snapshot, unconditionally. mergeSnapshot reads only `sheets`, sheet/row
+   * nodes and the doc keys that have a register (title and the measures /
+   * names / assets / blobs maps), so a receiver loses nothing. Their doc-level
+   * registers are dropped too, so a stripped value can never read as a delete.
+   */
   snapshot(): { doc: DashDoc; state: SyncStateJSON } {
-    return {
-      doc: JSON.parse(JSON.stringify(this.store.doc)) as DashDoc,
-      state: JSON.parse(JSON.stringify(this.state.toJSON())) as SyncStateJSON,
-    }
+    // LOCAL_ONLY_DOC_KEYS is also the receive filter (crdt.ts), so send and receive match
+    const doc = JSON.parse(JSON.stringify(this.store.doc)) as Record<string, unknown>
+    for (const k of LOCAL_ONLY_DOC_KEYS) delete doc[k]
+    const state = JSON.parse(JSON.stringify(this.state.toJSON())) as SyncStateJSON
+    const docRegs = (state.regs as Record<string, Record<string, unknown>> | undefined)?.[DOC_NODE]
+    if (docRegs)
+      for (const key of Object.keys(docRegs))
+        if (LOCAL_ONLY_DOC_KEYS.has(key.split('.')[0])) delete docRegs[key]
+    return { doc: doc as unknown as DashDoc, state }
   }
 
   applySnapshot(rdoc: DashDoc, rstate: SyncStateJSON) {

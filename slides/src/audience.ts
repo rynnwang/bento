@@ -34,6 +34,7 @@
  * the field names — the boundary is slides' and lives here only.
  */
 import type { BentoDoc, Slide } from './model'
+import { stripEnvelope } from './envelope.ts' // .ts: this module stays node-importable for the rigs
 import type { Op } from '../../kernel/src/sync/crdt'
 
 /** Slide-level fields an audience never receives. Comments are slide-level
@@ -69,14 +70,29 @@ function projectSlide(slide: Slide): Slide {
     if (k === 'notes') out.notes = ''
     else delete out[k]
   }
+  if (Array.isArray(slide.elements)) out.elements = slide.elements.map(projectElement)
   return out as unknown as Slide
+}
+
+/**
+ * An embed's `doc` is another deck's JSON, and that deck's ENVELOPE (`collab` —
+ * room, read key, private halves — and `docId`) must never reach an audience
+ * (envelope.ts: the same rule every other copy applies via stripCollabSecrets).
+ * Copy-on-write: the element and its doc are replaced, never edited, because
+ * the op this runs on is the same object the presenter sends to the real room.
+ */
+function projectElement<T>(el: T): T {
+  const src = (el as { doc?: unknown } | null)?.doc
+  const doc = stripEnvelope(src)
+  return doc === src ? el : { ...el, doc }
 }
 
 /**
  * The audience document. Deep-copies; the presenter's doc is untouched.
  *
  * - every slide (interactive states included) and every custom layout goes
- *   through `projectSlide`
+ *   through `projectSlide`, which also strips every embedded document's
+ *   envelope (`collab` + `docId`)
  * - `collab` becomes the ticket: same room, `key` = the SHOW key, the
  *   audience invite, role 'reader' (the client's read-only boot path), and no
  *   private halves — `ownerPriv`, `writerPriv` and any writer invite are gone
@@ -128,9 +144,12 @@ export function projectDoc(doc: BentoDoc, ticket: AudienceTicket): { doc: BentoD
  * - a doc-level `set` of a slide-shaped list (`layouts`) → the same op with
  *   every entry projected
  * - an `ins` of a slide → the same op with the inserted node projected (the
- *   slide must still arrive — minus its notes and comments)
- * - everything else → unchanged. Element ops carry no hidden field; slide
- *   deletes/orders reveal nothing; doc-level sets have no hidden keys.
+ *   slide must still arrive — minus its notes and comments, and minus any
+ *   embedded document's envelope)
+ * - an `ins` of an element, or a `set` of an element's `doc` → the embed's
+ *   document without its envelope (the element still arrives)
+ * - everything else → unchanged. Other element ops carry no hidden field;
+ *   slide deletes/orders reveal nothing; doc-level sets have no hidden keys.
  */
 export function projectOp(op: Op): Op | null {
   if (op.op === 'set' && op.sl !== undefined && op.el === undefined
@@ -141,6 +160,16 @@ export function projectOp(op: Op): Op | null {
     return { ...op, v: (op.v as Slide[]).map(projectSlide) }
   }
   if (op.op === 'ins' && op.kind === 'slide') return { ...op, node: projectSlide(op.node as Slide) }
+  // an element inserted mid-show, or an embed's document replaced: the same
+  // embedded-envelope rule projectDoc applies through projectSlide
+  if (op.op === 'ins' && op.kind === 'element') {
+    const node = projectElement(op.node)
+    return node === op.node ? op : { ...op, node }
+  }
+  if (op.op === 'set' && op.el !== undefined && op.k === 'doc') {
+    const v = stripEnvelope(op.v)
+    return v === op.v ? op : { ...op, v }
+  }
   return op
 }
 

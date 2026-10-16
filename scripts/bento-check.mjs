@@ -265,7 +265,7 @@ if (pngDir) {
 
 // ---- the report ----------------------------------------------------------------------
 const findings = report.findings ?? []
-const overflow = findings.filter((f) => f.code === 'text-overflow')
+const overflow = findings.filter((f) => f.code === 'text-overflow' || f.code === 'table-overflow')
 const dropped = report.load?.dropped ?? []
 const errors = findings.filter((f) => f.severity === 'error').length
 const warnings = findings.filter((f) => f.severity === 'warning').length

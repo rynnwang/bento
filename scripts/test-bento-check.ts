@@ -111,6 +111,27 @@ const r2 = run([p, '--fail-on', 'error'])
 ok(r2.code === 0, `the same deck exits 0 with --fail-on error (warnings only) (exit ${r2.code})`)
 ok(/warning text-overflow \[t1\]/.test(r2.out) && /out-of-canvas \[r1\]/.test(r2.out), 'the human summary lists both with their ids')
 
+console.log('\ntables whose rows outgrow the box (#494)\n')
+{
+  const rows = (n: number) => Array.from({ length: n }, (_, i) => ({ cells: [{ html: `Row ${i + 1}` }, { html: String(i * 10) }] }))
+  const table = (id: string, y: number, h: number, n: number, radius: number) => ({
+    id, type: 'table', x: 96, y, w: 400, h, rotation: 0, opacity: 1, columns: [{ w: 1 }, { w: 1 }], header: false,
+    rows: rows(n), style: { fontSize: 16, cellPadX: 10, cellPadY: 8, borderWidth: 1, borderColor: '#ccc', radius },
+  })
+  const deck = { ...full, slides: [{ id: 's1', background: '#ffffff', transition: 'fade', notes: '', elements: [
+    table('round-over', 40, 80, 10, 12), table('round-fits', 40, 400, 3, 12), table('square-over', 460, 60, 8, 0),
+  ] }] }
+  const rt = run([write('tables.json', deck), '--json'])
+  let jt: any = null
+  try { jt = JSON.parse(rt.out) } catch {}
+  const tf = (id: string) => (jt?.findings ?? []).find((f: any) => f.code === 'table-overflow' && f.element === id)
+  ok(!!tf('round-over') && /need (\d+)px/.test(tf('round-over').message) && tf('round-over').path === 'h' && tf('round-over').severity === 'warning',
+    `a rounded table whose rows outgrow its box is reported, with the px they need (${tf('round-over')?.message?.slice(0, 50)}…)`)
+  ok(!!tf('square-over'), 'so is one without a radius')
+  ok(!tf('round-fits'), 'a table that fits its box is not')
+  ok((jt?.overflow ?? []).some((f: any) => f.element === 'round-over'), 'table overflow is in the overflow list too')
+}
+
 console.log('\nimages\n')
 const outDir = path.join(tmp, 'png')
 const r3 = run([p, '--png', outDir, '--json'])

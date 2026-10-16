@@ -13,7 +13,8 @@
 
 export * from '../../../kernel/src/sync/crdt.ts';
 
-import { SyncEngine, shape } from '../../../kernel/src/sync/crdt.ts';
+import { SyncEngine, shape, historySyncKeys } from '../../../kernel/src/sync/crdt.ts';
+import { TYPE_FIELDS } from '../docclass.ts';
 import type { DocShape } from '../../../kernel/src/sync/crdt.ts';
 
 /**
@@ -53,7 +54,28 @@ import type { DocShape } from '../../../kernel/src/sync/crdt.ts';
  * declared: 34 of 120 fuzz seeds converged on a document with a dangling note.
  * Per-key, as `assets` and `blobs` have always been, both survive.
  */
-export const TYPE_SHAPE: DocShape = shape('body', null, 'text', ['footnotes']);
+/**
+ * Doc-level keys sync by ALLOWLIST: the field-class map (docclass.ts) is bound,
+ * so this replica emits only content keys (plus `maps`), refuses non-content
+ * keys inbound whatever the sender claims, and never re-emits a key it does not
+ * declare. skipDoc stays the floor in both directions.
+ *
+ * The history keys that still sync, as whole registers:
+ *   comments    Maintainer ruling 2026-10-15: comments sync live to everyone
+ *               in the room, readers included, as they did before binding.
+ *               Still a whole `comments` register, so the wire is byte-
+ *               identical to 1.2.7's and a mixed-version room converges.
+ * Signatures are CONTENT (canon.ts v2 signs a commitment to the history, not the
+ * history), so they sync as content without being named here. They were listed
+ * while they were 'history' as an interim, and historySyncKeys refused them the
+ * moment they became content — at compile time, which is what removed them.
+ * `revisions` and `historySalt` never sync: each replica keeps its own timeline
+ * and its own salt (revisions is skipDoc; historySalt is history, not listed).
+ */
+const SYNC_HISTORY = ['comments'] as const;
+
+export const TYPE_SHAPE: DocShape = shape('body', null, 'text', ['footnotes'],
+  TYPE_FIELDS, historySyncKeys(TYPE_FIELDS, SYNC_HISTORY));
 
 /** The engine bound to bento/type. */
 export class SyncState extends SyncEngine {

@@ -8,14 +8,16 @@ import Moveable from 'moveable'
 import Selecto from 'selecto'
 import type { Store } from '../store'
 import { t } from '../i18n'
-import { defaultShape, internAsset, readableInk, uid, type ShapeElement, type SlideElement, type TableElement } from '../model'
+import { defaultShape, internAsset, readableInk, uid, type ShapeElement, type SlideElement, type TableElement, type TextElement } from '../model'
+import { estimatedFrames, fencedElements, splitFences, toggleCodeOnSelection, type FencePart, type PartFrame } from './codefence'
 import { renderSlide, sanitizeHtml } from '../render'
 import { autoformatAtCaret, clearAutoformat, markdownToHtml, stripMarkerEscapes, undoAutoformat } from './markdown'
+import { inList, shiftList, shiftListHtml, undoIndent } from './listindent'
 import { bulletsToLists } from './bullets'
 import { clipboardToHtml } from './paste'
 import { execFormat, hideFormatBar, syncFormatBar } from './richtext'
 import { PathEditor } from './patheditor'
-import { LineEditor, isLineLike, setLineEndpoints, setPathAnchors } from './lineedit'
+import { LineEditor, isLineLike, setLineEndpoints, setPathAnchors, boxAnchors, nearestAnchor, boxContains } from './lineedit'
 import { CropEditor } from './cropedit'
 import { BezierEditor, isCurve } from './beziereditor'
 import { simplifyPoints } from './patheditor'
@@ -52,6 +54,10 @@ export class SlideCanvas {
    *  to stand down for it, or every scroll the zoom makes is snapped back. */
   private pinching = false
   private zoomLabel: HTMLElement | null = null
+  /** Ghost Cut (⇧⌘X): elements waiting for ⌘V to move them — faded by CSS
+   *  (.bento-el-ghost-cut) and never selectable. Set through setGhost. */
+  ghost: { slideId: string; ids: string[] } | null = null
+  private lastPointer: { x: number; y: number } | null = null
   private editing: HTMLElement | null = null
   /** The listeners of the CURRENT inline edit (text box or table cell), so
    *  they die with it. Without this a node that was edited, committed with
@@ -67,6 +73,8 @@ export class SlideCanvas {
   /** startTextEdit swapped the rendered form for raw source (a field or a
    *  formula), so commit must re-render even if the text is unchanged. */
   private editingShowedRaw = false
+  /** The selection is still the select-all that entering the box made. */
+  private editAutoSelected = false
   /** when editing a table cell, which cell (else null → text element edit) */
   private editingCell: { r: number; c: number } | null = null
   /** tears down the selection watcher that drives the formatting bar */
@@ -131,6 +139,7 @@ export class SlideCanvas {
       this.wheelNavCooldown = now + 400
       this.onSlideNav(dir)
     }, { passive: false })
+    this.scroller.addEventListener('mousemove', (ev) => { this.lastPointer = { x: ev.clientX, y: ev.clientY } })
 
     // Middle-button drag pans. Until now the scrollbars were the only way to
     // move a zoomed slide, which puts the control at the edge of the screen
@@ -592,6 +601,22 @@ export class SlideCanvas {
   zoomOut() { this.setZoom(this.zoom / 1.25) }
   zoomReset() { this.setZoom(1) }
 
+  /** Where the pointer last was over the slide, or null if it is off it. */
+  pointerOnSlide(): { x: number; y: number } | null {
+    const p = this.lastPointer && this.slidePointAt(this.lastPointer.x, this.lastPointer.y)
+    const { width, height } = this.store.doc.size
+    return p && p.x >= 0 && p.y >= 0 && p.x <= width && p.y <= height ? p : null
+  }
+
+  setGhost(ghost: { slideId: string; ids: string[] } | null) {
+    this.ghost = ghost
+    this.render()
+  }
+
+  private isGhost(id: string) {
+    return this.ghost?.slideId === this.store.slide.id && this.ghost.ids.includes(id)
+  }
+
   private buildZoomBar() {
     const bar = document.createElement('div')
     bar.className = 'ed-zoombar'
@@ -866,6 +891,9 @@ export class SlideCanvas {
       for (const node of next.querySelectorAll<HTMLElement>('[data-show-on-hover]')) {
         if (node.dataset.showOnHover !== active) node.style.display = 'none'
       }
+    }
+    for (const node of next.querySelectorAll<HTMLElement>('[data-el-id]')) {
+      if (this.isGhost(node.dataset.elId!)) node.classList.add('bento-el-ghost-cut')
     }
     this.renderSetBar(sets)
     if (this.surface) this.surface.replaceWith(next)
@@ -1307,7 +1335,7 @@ export class SlideCanvas {
     this.selecto.on('selectEnd', (e) => {
       const ids = (e.selected as HTMLElement[])
         .map((n) => n.dataset.elId)
-        .filter((id): id is string => !!id)
+        .filter((id): id is string => !!id && !this.isGhost(id)) // a marquee never picks up a ghost
       this.store.select(this.expandGroups(ids))
       if (e.isDragStartEnd) {
         e.inputEvent.preventDefault()
@@ -1428,6 +1456,17 @@ export class SlideCanvas {
       inner.innerText = model.content
       this.editingShowedRaw = true
     }
+    // An inline code run that ENDS a line (last thing in the box, or right
+    // before a <br>) has no text position after it, so the caret can only sit
+    // inside it and everything typed at the end of the line became code (#626).
+    // The autoformat leaves a zero-width space after the code it makes; a box
+    // opened later (saved, pasted, from a file) gets the same escape hatch
+    // here. Commit strips every U+200B, so the saved html is unchanged.
+    for (const code of inner.querySelectorAll('code')) {
+      const next = code.nextSibling
+      if (code.closest('pre') || (next && next.nodeName !== 'BR')) continue
+      code.after(document.createTextNode('\u200b'))
+    }
     this.editing = node
     this.editListeners?.abort()
     this.editListeners = new AbortController()
@@ -1437,9 +1476,11 @@ export class SlideCanvas {
     inner.contentEditable = 'true'
     inner.focus()
     document.getSelection()?.selectAllChildren(inner)
+    this.editAutoSelected = true // cleared by the first key or click (see the ` toggle)
     this.syncTargets()
     this.watchSelection(inner)
     this.onTextEditChange?.(node.dataset.elId)
+    inner.addEventListener('mousedown', () => { this.editAutoSelected = false }, { signal })
 
     inner.addEventListener('keydown', (ev) => {
       ev.stopPropagation() // keep global shortcuts (Delete, arrows…) away
@@ -1448,13 +1489,35 @@ export class SlideCanvas {
         this.commitTextEdit()
         return
       }
+      // Tab / Shift+Tab in a bullet indents / outdents it (listindent.ts);
+      // anywhere else Tab does what it always did
+      if (ev.key === 'Tab' && !ev.metaKey && !ev.ctrlKey && !ev.altKey) {
+        const sel = document.getSelection()
+        const range = sel?.rangeCount ? sel.getRangeAt(0) : null
+        if (range && inList(inner, range)) {
+          ev.preventDefault()
+          shiftList(inner, range, ev.shiftKey ? -1 : 1, true)
+          return
+        }
+      }
+      // ` on a selection wraps each selected line as code (on code: unwraps);
+      // with nothing selected it types a backtick as usual (codefence.ts).
+      // Not on the select-all that entering the box makes: typing ``` there
+      // replaces the text, it does not wrap it — only a selection the author
+      // made (drag, shift-arrows, ⌘A) is a request to wrap.
+      const autoSelected = this.editAutoSelected
+      this.editAutoSelected = false
+      if (ev.key === '`' && !autoSelected && !ev.metaKey && !ev.ctrlKey && !ev.altKey && toggleCodeOnSelection(inner)) {
+        ev.preventDefault()
+        return
+      }
       // inline markup: ⌘/Ctrl+B/I/U toggle bold/italic/underline on the
       // selection (sanitize keeps b/i/u/strong/em, so it round-trips)
       if (ev.metaKey || ev.ctrlKey) {
         // ⌘Z right after a markdown conversion restores the literal markers;
         // otherwise the browser's native contentEditable undo runs
         if (ev.key.toLowerCase() === 'z' && !ev.shiftKey) {
-          if (undoAutoformat()) ev.preventDefault()
+          if (undoAutoformat() || undoIndent(inner)) ev.preventDefault()
           return
         }
         const cmd = { b: 'bold', i: 'italic', u: 'underline' }[ev.key.toLowerCase()]
@@ -1516,6 +1579,15 @@ export class SlideCanvas {
     const el = this.store.doc.slides
       .find((slide) => slide.id === slideId)
       ?.elements.find((element) => element.id === id)
+    // a closed ``` fence: the text box becomes (or splits around) a Code element
+    if (el && el.type === 'text') {
+      const parts = splitFences(text)
+      if (parts.some((p) => p.kind === 'code')) {
+        this.commitFences(el, slideId, node, inner, parts)
+        this.flushPendingRender()
+        return
+      }
+    }
     if (el && el.type === 'text' && (el.html !== html || grownH > el.h)) {
       this.store.commit(() => {
         el.html = html
@@ -1539,6 +1611,99 @@ export class SlideCanvas {
       this.syncTargets()
     }
     this.flushPendingRender()
+  }
+
+  /** Replace a text box holding a closed ``` fence with its parts — text, code,
+   *  text — in one undoable commit, and select the code. */
+  private commitFences(el: TextElement, slideId: string | null, node: HTMLElement, inner: HTMLElement, parts: FencePart[]) {
+    const slide = this.store.doc.slides.find((s) => s.id === slideId)
+    if (!slide) return
+    const frames = this.measureFenceParts(el, node, inner, parts) ?? estimatedFrames(el, parts)
+    let made: SlideElement[] = []
+    this.store.commit(() => {
+      const at = slide.elements.findIndex((e) => e.id === el.id)
+      if (at < 0) return
+      made = fencedElements(el, parts, frames)
+      slide.elements.splice(at, 1, ...made)
+    })
+    const code = made.find((e) => e.type === 'code')
+    if (code && slide.id === this.store.slide?.id) this.store.select([code.id])
+  }
+
+  /**
+   * Where each fence part sat in the box just edited, in slide units, read off
+   * the rendered lines — so the split parts land where the author saw them —
+   * with each text part's html (its formatting kept). null when the rendered
+   * lines do not line up with the parsed parts, or the box is rotated; the
+   * caller then estimates from line counts.
+   */
+  private measureFenceParts(el: TextElement, node: HTMLElement, inner: HTMLElement, parts: FencePart[]): PartFrame[] | null {
+    if (el.rotation) return null
+    const nodeRect = node.getBoundingClientRect()
+    const scale = nodeRect.width / el.w
+    if (!scale || !Number.isFinite(scale)) return null
+    const isBlock = (n: Node) => n instanceof Element && /^(DIV|P|LI|H1|H2)$/.test(n.tagName)
+    // the line box holding a text node: its block under `inner`, else itself
+    const lineBox = (n: Node): Node => {
+      let b = n
+      while (b.parentNode && b.parentNode !== inner) b = b.parentNode
+      return isBlock(b) ? b : n
+    }
+    const fences: Node[] = []
+    const walker = document.createTreeWalker(inner, NodeFilter.SHOW_TEXT)
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      if (/^[ \t ]*```[\w+#.-]*[ \t ]*$/.test((n as Text).data.replace(/​/g, ''))) fences.push(lineBox(n))
+    }
+    const codeCount = parts.filter((p) => p.kind === 'code').length
+    if (fences.length !== codeCount * 2) return null
+    const rectOf = (n: Node) => {
+      if (n instanceof Element) return n.getBoundingClientRect()
+      const r = document.createRange()
+      r.selectNodeContents(n)
+      return r.getBoundingClientRect()
+    }
+    const all = document.createRange()
+    all.selectNodeContents(inner)
+    const contentBottom = all.getBoundingClientRect().bottom
+    // the html between two boundaries (null = the start/end of the box)
+    const htmlBetween = (after: Node | null, before: Node | null): string => {
+      const r = document.createRange()
+      if (after) r.setStartAfter(after); else r.setStart(inner, 0)
+      if (before) r.setEndBefore(before); else r.setEnd(inner, inner.childNodes.length)
+      const box = document.createElement('div')
+      box.append(r.cloneContents())
+      const edge = /^(?:\s|<br\s*\/?>|<div>(?:\s|<br\s*\/?>)*<\/div>)+|(?:\s|<br\s*\/?>|<div>(?:\s|<br\s*\/?>)*<\/div>)+$/g
+      return bulletsToLists(sanitizeHtml(stripMarkerEscapes(box.innerHTML.replace(/​/g, '')))).replace(edge, '')
+    }
+    const minH = Math.ceil(el.fontSize * (el.lineHeight || 1.2))
+    // Heights are measured; positions are re-stacked from the box top, each part
+    // right under the last: the ``` lines are gone, and leaving their two lines
+    // of space around every code part reads as a hole in the slide.
+    const gap = Math.round(el.fontSize * 0.4)
+    const frames: PartFrame[] = []
+    let prevClose: Node | null = null
+    let segTop = nodeRect.top // screen y where the current text segment starts
+    let y = el.y
+    const place = (h: number, html?: string) => {
+      frames.push({ y: Math.round(y), h: Math.max(minH, Math.round(h)), ...(html !== undefined ? { html } : {}) })
+      y += Math.max(minH, Math.round(h)) + gap
+    }
+    for (let i = 0; i <= codeCount; i++) {
+      const open = fences[i * 2] ?? null
+      const html = htmlBetween(prevClose, open)
+      // a text segment exists as a part only when it holds visible text
+      if (html.replace(/<[^>]*>/g, '').replace(/&nbsp;| /g, ' ').trim()) {
+        const bottom = open ? rectOf(open).top : contentBottom
+        place((bottom - segTop) / scale, html)
+      }
+      if (!open) break
+      const close = fences[i * 2 + 1]
+      // the code's own lines: below the opening ``` line, above the closing one
+      place((rectOf(close).top - rectOf(open).bottom) / scale)
+      prevClose = close
+      segTop = rectOf(close).bottom
+    }
+    return frames.length === parts.length ? frames : null
   }
 
   /** Run a repaint that was deferred while an inline edit was in progress (a
@@ -1673,6 +1838,24 @@ export class SlideCanvas {
     return !!this.editing
   }
 
+  /** The panel's Indent / Outdent: the bullets under the caret while a text
+   *  box is open, else the whole selected text box as one undo step. */
+  indentList(dir: 1 | -1): boolean {
+    if (this.editing && !this.editingCell) {
+      const inner = this.editing.querySelector<HTMLElement>('.bento-text-inner')
+      const sel = document.getSelection()
+      if (!inner || !sel?.rangeCount) return false
+      return shiftList(inner, sel.getRangeAt(0), dir, true)
+    }
+    const el = this.store.selectedElements
+    if (el.length !== 1 || el[0].type !== 'text') return false
+    const html = shiftListHtml(el[0].html, dir)
+    if (html === null) return false
+    const id = el[0].id
+    this.store.commit(() => { const e = this.store.element(id); if (e?.type === 'text') e.html = html })
+    return true
+  }
+
   /** The element node whose text is open for editing, if any. Callers that run
    *  on a PRESS need this: the press itself blurs the caret and commits, so by
    *  the event after it the answer has already changed. */
@@ -1717,16 +1900,8 @@ export class SlideCanvas {
     }
     type Pt = { x: number; y: number }
     type Snap = { el: string; side: 'auto' | 'top' | 'right' | 'bottom' | 'left'; pt: Pt } | null
-    const anchorsFor = (id: string) => {
-      const e = this.store.slide.elements.find((x) => x.id === id)!
-      return [
-        { side: 'top' as const, pt: { x: e.x + e.w / 2, y: e.y } },
-        { side: 'right' as const, pt: { x: e.x + e.w, y: e.y + e.h / 2 } },
-        { side: 'bottom' as const, pt: { x: e.x + e.w / 2, y: e.y + e.h } },
-        { side: 'left' as const, pt: { x: e.x, y: e.y + e.h / 2 } },
-        { side: 'auto' as const, pt: { x: e.x + e.w / 2, y: e.y + e.h / 2 } },
-      ]
-    }
+    const anchorsFor = (id: string) =>
+      boxAnchors(this.store.slide.elements.find((x) => x.id === id)!)
     // visible anchor points on the element under the cursor (connector tool)
     const showAnchors = (p: Pt | null) => {
       dots.innerHTML = ''
@@ -1748,13 +1923,10 @@ export class SlideCanvas {
       if (kind !== 'connector' && kind !== 'curve-connector') return { a: null, pt: p }
       const id = this.elementAt(p, 12 * Math.max(k(), 1))
       if (!id) return { a: null, pt: p }
-      let best: Snap = null
-      let bd = 30 * Math.max(k(), 1)
-      for (const cand of anchorsFor(id)) {
-        const d = Math.hypot(p.x - cand.pt.x, p.y - cand.pt.y)
-        if (d < bd) { bd = d; best = { el: id, side: cand.side, pt: cand.pt } }
-      }
-      return best ? { a: best, pt: best.pt } : { a: { el: id, side: 'auto', pt: p }, pt: p }
+      const near = nearestAnchor(anchorsFor(id), p, 30 * Math.max(k(), 1))
+      return near
+        ? { a: { el: id, side: near.side, pt: near.pt }, pt: near.pt }
+        : { a: { el: id, side: 'auto', pt: p }, pt: p }
     }
 
     if (kind === 'poly') {
@@ -1864,7 +2036,7 @@ export class SlideCanvas {
     for (let i = els.length - 1; i >= 0; i--) {
       const e = els[i]
       if (e.type === 'shape' && (e.shape === 'line' || e.shape === 'path')) continue
-      if (pt.x >= e.x - pad && pt.x <= e.x + e.w + pad && pt.y >= e.y - pad && pt.y <= e.y + e.h + pad) return e.id
+      if (boxContains(e, pt, pad)) return e.id
     }
     return null
   }

@@ -72,6 +72,28 @@ console.log('\nelement clipboard')
   ok(font != null && target.assets![font.asset] === source.assets!['font-acme'], 'pasted element font points at its source bytes')
 }
 
+console.log('\npaste position (#569)')
+{
+  const doc = newDoc()
+  doc.slides.push({ id: 's2', background: '#fff', elements: [] } as never)
+  const a = defaultShape('rect', { id: 'a', x: 100, y: 80 }), b = defaultText({ id: 'b', html: 'B', x: 300, y: 80 })
+  doc.slides[0].elements = [a, b]
+  const clip = parseClip(serializeElements([a, b], doc))!
+  const at = (els: SlideElement[]) => els.map((e) => `${e.x},${e.y}`).join(' ')
+  const other = insertElements(clip, doc, doc.slides[1])
+  ok(at(other) === '100,80 300,80', `onto another slide it keeps the copied position (${at(other)})`)
+  const same1 = insertElements(clip, doc, doc.slides[0])
+  ok(at(same1) === '120,100 320,100', `onto the source slide it steps +20, as one group (${at(same1)})`)
+  const same2 = insertElements(clip, doc, doc.slides[0])
+  ok(at(same2) === '140,120 340,120', `pasting again cascades another +20 (${at(same2)})`)
+  const again = insertElements(clip, doc, doc.slides[1])
+  ok(at(again) === '120,100 320,100', `a second paste on the other slide steps off the first (${at(again)})`)
+  // an element at the spot that is NOT the same thing (other type/size) does not count
+  doc.slides.push({ id: 's3', background: '#fff', elements: [defaultShape('ellipse', { id: 'c', x: 100, y: 80, w: 37, h: 37 })] } as never)
+  const unlike = insertElements(clip, doc, doc.slides[2])
+  ok(at(unlike) === '100,80 300,80', `something different at the spot does not push the paste (${at(unlike)})`)
+}
+
 console.log('\nslide clipboard')
 {
   const source = sourceDoc()
@@ -112,7 +134,7 @@ function richElements(): SlideElement[] {
       id: 'text-1', html: '<b>Bold</b> &amp; fine', fontFamily: "'Acme', sans-serif",
       letterSpacing: 1.5, role: 'title', placeholder: 'Click to add title',
       // color(srgb …) is what a deck converted from a design tool actually
-      // carries — the longest colour notation in OneMarket, at 45 characters
+      // carries — the longest colour notation seen in a real deck, 45 characters
       color: 'color(srgb 0.156863 0.188235 0.227451 / 0.55)',
       colorGradient: { angle: 90, stops: [{ at: 0, color: '#FFFFFF' }, { at: 1, color: 'rgba(0,0,0,0.5)' }] },
       textStroke: { width: 2, color: '#000000', fill: 'none' },
@@ -122,8 +144,8 @@ function richElements(): SlideElement[] {
     defaultShape('path', {
       id: 'shape-1', d: 'M0,0 C10,10 20,-5 30,0 Z', pathBox: [0, 0, 30, 10],
       // an svg paint may reference a gradient/filter in the document's own
-      // markup, quotes and all: OneMarket_Commercial_Architecture slide 21,
-      // element `topo-0`. Dropping it left render.ts writing fill="undefined",
+      // markup, quotes and all, as a real deck did. Dropping it left
+      // render.ts writing fill="undefined",
       // which paints the shape BLACK.
       fill: 'url("#core-glow")',
       strokeStyle: 'dashed', lineStart: 'arrow', lineEnd: 'dot', strokeDash: 6,
@@ -363,6 +385,32 @@ console.log('\nkey coverage')
   ok(missing.length === 0, `every element property in the format has a check (missing: ${missing.join(', ') || 'none'})`)
   const slideMissing = MODEL_KEYS.slide.filter((k) => !CHECKED_KEYS.slide.includes(k))
   ok(slideMissing.length === 0, `every slide property in the format has a check (missing: ${slideMissing.join(', ') || 'none'})`)
+}
+
+// --- copying never puts an embedded deck's envelope on the system clipboard --
+// The clipboard is readable by any app: a copied embed whose document (or a
+// document nested inside it) carries another deck's envelope — collab, docId —
+// must leave that behind. Read from the RAW serialized text, before any paste
+// gate, because that text is what lands on the clipboard.
+{
+  console.log('\nclipboard: embedded envelopes stay behind\n')
+  const env = (tag: string) => ({ docId: `${tag}-DOCID`, collab: { room: `w${tag}-ROOM`, key: `${tag}-ROOM-KEY`, v: 2,
+    ownerPriv: `${tag}-OWNER-PRIV`, writerPriv: `${tag}-WRITER-PRIV`, invite: { pub: 'p', priv: `${tag}-INV-PRIV`, role: 'writer', sig: 's' } } })
+  const needles = ['C1', 'C2'].flatMap((t) => [`${t}-DOCID`, `w${t}-ROOM`, `${t}-ROOM-KEY`, `${t}-OWNER-PRIV`, `${t}-WRITER-PRIV`, `${t}-INV-PRIV`])
+  const deck = (tag: string, inner?: unknown) => ({ format: 'bento/slides', version: 1, title: `clip deck ${tag}`, ...env(tag),
+    slides: [{ id: `${tag}-s`, elements: inner === undefined ? [] : [{ id: `${tag}-e`, type: 'embed', app: 'slides', doc: inner }] }] })
+  const doc = newDoc() as any
+  doc.slides[0].elements = [{ id: 'clip-embed', type: 'embed', x: 0, y: 0, w: 400, h: 300, rotation: 0, opacity: 1, app: 'slides', doc: deck('C1', deck('C2')) }]
+  const before = JSON.stringify(doc)
+  const found = (s: string) => needles.filter((n) => s.includes(n))
+  ok(found(before).length === needles.length, `the deck carries both levels' envelopes (${found(before).length}/${needles.length}) — the rows below are not vacuous`)
+  const elText = serializeElements(doc.slides[0].elements, doc)
+  ok(found(elText).length === 0, `copying ELEMENTS puts none of it on the clipboard (${found(elText).join(', ') || 'none'})`)
+  ok(elText.includes('clip deck C1') && elText.includes('clip deck C2'), '…and the embedded content still copies, both levels')
+  const slText = serializeSlides(doc.slides, doc)
+  ok(found(slText).length === 0, `copying SLIDES puts none of it on the clipboard (${found(slText).join(', ') || 'none'})`)
+  ok(slText.includes('clip deck C1') && slText.includes('clip deck C2'), '…and the embedded content still copies, both levels')
+  ok(JSON.stringify(doc) === before, 'the open deck is not modified by copying')
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`)
