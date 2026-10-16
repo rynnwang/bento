@@ -22,10 +22,10 @@
 // a DOM (node tooling) the measured checks are skipped and `measured` reports
 // false, rather than guessing.
 
-import type { BentoDoc, Slide, SlideElement, TextElement } from './model.ts'
+import type { BentoDoc, Slide, SlideElement, TableElement, TextElement } from './model.ts'
 import { MODEL_KEYS } from './modelkeys.generated.ts'
 import { isRemoteUrl } from '../../kernel/src/net.ts'
-import { measureElements } from './measure.ts'
+import { measureElements, measureTables } from './measure.ts'
 import { BUILTIN_FONTS } from './fonts.ts'
 import { eachRef, paletteOf, parseThemeRef, resolveRef, _readPath } from './palette.ts'
 
@@ -469,6 +469,21 @@ function measureOverflow(doc: BentoDoc, add: (f: Finding) => void) {
     add({
       slide, element: el.id, code: 'text-overflow', severity: 'warning', path: 'h',
       message: `Text needs ${m.height}px but the box is ${el.h}px tall — it overflows by ${m.overflow}px (${m.lines} lines) and will collide with whatever is below it.`,
+    })
+  })
+  // Tables the same way: rows that need more height than the box run past
+  // its bottom (#494). With a corner radius they used to be clipped instead,
+  // silently; they now show, so this is what says the box is too short.
+  const tables: Array<{ slide: string; el: TableElement }> = []
+  for (const slide of doc.slides) {
+    for (const el of slide.elements) if (el.type === 'table' && el.rows.length) tables.push({ slide: slide.id, el })
+  }
+  measureTables(tables.map((t) => t.el), doc).forEach((m, i) => {
+    const { slide, el } = tables[i]
+    if (m.overflow <= 1) return
+    add({
+      slide, element: el.id, code: 'table-overflow', severity: 'warning', path: 'h',
+      message: `The table's rows need ${m.height}px but the box is ${el.h}px tall — they run ${m.overflow}px past it and will collide with whatever is below. Make the box taller, or the text or cell padding smaller.`,
     })
   })
 }

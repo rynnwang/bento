@@ -40,6 +40,7 @@ import { effectiveParents, descendantsOf } from '../spaces/src/model.ts'
 // (`export … from` re-exports without binding the name locally, and this rig
 // uses it below — so it is imported and re-exported.)
 import { SPACES_SHAPE } from '../spaces/src/sync/crdt.ts'
+import { SPACES_FIELDS } from '../spaces/src/docclass.ts'
 export { SPACES_SHAPE }
 class SpacesSync extends SyncEngine {
   constructor(actor: string) { super(actor, SPACES_SHAPE) }
@@ -282,6 +283,111 @@ console.log('')
 // chosen. STRICT=1 turns them into assertions — flip it in CI the moment the
 // decisions land, and this rig becomes their enforcement.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// page.design is a page property REGISTER, like width or cover: it travels,
+// concurrent choices converge on one, and "Same as parent" (the key DELETED)
+// travels as a deletion — never as a stored empty value.
+// ---------------------------------------------------------------------------
+{
+  const pd = (d: Doc, id: string) => (d.pages.find((p) => p.id === id) as { design?: unknown } | undefined)?.design
+  const a = new Replica('pd-a', baseDoc())
+  const b = new Replica('pd-b', clone(a.doc))
+  const setOn = (r: Replica, v: string | null) => r.mutate((d) => {
+    const p = d.pages.find((x) => x.id === 'p2') as { design?: unknown }
+    if (v === null) delete p.design
+    else p.design = v
+  })
+  b.receive(setOn(a, 'ledger'))
+  ok(pd(b.doc, 'p2') === 'ledger', 'a page design chosen on one replica arrives on the other')
+  const opsA = setOn(a, 'studio')
+  const opsB = setOn(b, 'riso')
+  a.receive(opsB)
+  b.receive(opsA)
+  ok(pd(a.doc, 'p2') === pd(b.doc, 'p2') && ['studio', 'riso'].includes(String(pd(a.doc, 'p2'))),
+    `two concurrent page-design choices converge on one of them (${String(pd(a.doc, 'p2'))})`)
+  b.receive(setOn(a, null))
+  ok(!Object.hasOwn(b.doc.pages.find((p) => p.id === 'p2')!, 'design') && pd(a.doc, 'p2') === undefined,
+    '"Same as parent" (the key deleted) arrives as a deletion — no key is left behind')
+  ok(JSON.stringify(a.doc) === JSON.stringify(b.doc), 'both replicas end byte-identical')
+}
+
+// ---------------------------------------------------------------------------
+// DOC-LEVEL KEYS GO BY ALLOWLIST (kernel #683, bound in spaces/src/sync/crdt.ts).
+//
+// SPACES_SHAPE carries the real field map, so a replica EMITS only the doc keys
+// docclass.ts classes 'content'. Every non-content key spaces has today is also
+// on the kernel's skipDoc floor, so the half that is NEW here is the UNKNOWN key:
+// a field a newer build added, opened in this build, is never echoed to the
+// room — and one that ARRIVES from such a peer is kept in this file but, again,
+// never re-emitted. Not emitting a key is not deleting it.
+//
+// Mutation: drop SPACES_FIELDS from the shape() call → the unknown-key rows go
+// red (the shipped denylist emits anything it does not explicitly skip).
+// ---------------------------------------------------------------------------
+{
+  type R = Record<string, unknown>
+  const docSets = (ops: unknown[]): string[] => (ops as R[])
+    .filter((o) => o.op === 'set' && o.el === undefined && o.sl === undefined)
+    .map((o) => String(o.k).split('.')[0])
+  const NON_CONTENT = Object.keys(SPACES_FIELDS).filter((k) => (SPACES_FIELDS as R)[k] !== 'content')
+
+  ok(SPACES_SHAPE.classes === SPACES_FIELDS, 'the spaces sync shape is bound to the real field map (docclass.ts)')
+
+  // SENDER — every field at once, so a row names which key leaked
+  {
+    const a = new SpacesSync('al-a')
+    const d = clone(baseDoc()) as unknown as R
+    a.adopt(d as never)
+    const before = clone(d)
+    d.title = 'renamed'
+    d.footnotes = { n1: 'a note' }
+    d.design = 'ledger'
+    d.periods = { s1: { label: 'Sprint 1', from: '2026-10-01', to: '2026-10-14', base: {} } }
+    for (const k of NON_CONTENT) d[k] = k === 'collab' ? { room: 'wX', key: 'LEAK' } : `changed-${k}`
+    d.futureField = 'a field a newer build added'
+    const sent = docSets(a.diff(before as never, d as never, { text: true }) as never)
+    ok(['title', 'footnotes', 'design', 'periods'].every((k) => sent.includes(k)),
+      `content keys are emitted, the per-key periods map included (${sent.join(', ')})`)
+    const leaked = NON_CONTENT.filter((k) => sent.includes(k))
+    ok(leaked.length === 0, `no non-content key is emitted (${NON_CONTENT.join(', ')}${leaked.length ? ` — LEAKED ${leaked.join(', ')}` : ''})`)
+    ok(!sent.includes('futureField'), 'an UNKNOWN key (a newer build\'s field opened here) is never emitted')
+    const out = a.outboundDoc(clone(d) as never) as R
+    ok(out.futureField === undefined && NON_CONTENT.every((k) => out[k] === undefined || k === 'collab' && out[k] === undefined),
+      'the snapshot doc a replica sends carries neither the unknown key nor any non-content key')
+  }
+
+  // RECEIVER — an older, unbound build emits whatever it does not skip
+  {
+    const OLD = new SyncEngine('al-old', { ...SPACES_SHAPE, classes: undefined })
+    const od = clone(baseDoc()) as unknown as R
+    OLD.adopt(od as never)
+    const a = new SpacesSync('al-recv')
+    const ad = clone(od)
+    a.adopt(ad as never)
+    const before = clone(od)
+    od.futureField = 'from a newer build'
+    od.title = 'old peer renamed it'
+    a.apply(ad as never, OLD.diff(before as never, od as never, { text: true }) as never)
+    ok(ad.futureField === 'from a newer build' && ad.title === 'old peer renamed it',
+      'an unknown key from a peer is APPLIED here (kept in this file), beside the content edit')
+    const regs = Object.keys((a.toJSON() as { regs: R }).regs)
+    ok(!regs.some((k) => k.endsWith(' futureField')) && regs.some((k) => k.endsWith(' title')),
+      '…and never echoed: the stamped state carries the title register, not the unknown one')
+    // this replica's next edits: delivered to the old peer, in order (an
+    // undelivered op would leave a sequence gap the engine rightly holds back)
+    const step = (change: R): unknown[] => {
+      const prev = clone(ad)
+      Object.assign(ad, change)
+      const ops = a.diff(prev as never, ad as never, { text: true }) as unknown[]
+      OLD.apply(od as never, ops as never)
+      return ops
+    }
+    ok(!docSets(step({ title: 'again' })).includes('futureField'), '…nor does this replica\'s next diff re-send it')
+    step({ design: 'riso' })
+    ok(od.design === 'riso' && od.title === 'again', 'a bound and an unbound replica still converge on content (mixed-version room)')
+  }
+}
+
 const STRICT = process.env.STRICT === '1'
 if (STRICT) {
   ok(worst.dupBlockId === 0, `no merge produced the same block id on two pages (worst ${worst.dupBlockId})`)

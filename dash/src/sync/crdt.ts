@@ -166,6 +166,82 @@ export const SYNC_V = 2
 
 export const DOC_NODE = '@doc'
 
+/**
+ * Top-level document keys that belong to THIS COPY and never to the room.
+ *
+ * `collab` is the room, its keys and this copy's role; `docId` is identity;
+ * `readonly`/`template` are what this copy may do and how it opens; `format`,
+ * `version` and `policy` are what this build agreed to read. None of them is
+ * shared content, and every one of them is something a sender could use
+ * against a receiver: a `set` op or a snapshot register for `collab` made
+ * every receiver adopt the SENDER'S room, and the next save wrote it into
+ * their file. Senders include any writer through the relay and — with no
+ * signature at all — any page on the same origin through the BroadcastChannel,
+ * which on file:// is every local document.
+ *
+ * Refused on the way in (`applySet`, `mergeSnapshot`) and never emitted on the
+ * way out (`localOne`). A key is matched on its top-level field, so
+ * `collab.sync` is as local as `collab`.
+ */
+/**
+ * Names that must never be used as an object key from remote data.
+ *
+ * `target[k] = v` with k `__proto__` REPLACES the target's prototype, so a
+ * remote `set` named `__proto__` could make `doc.readonly` read true and
+ * `doc.collab` read the sender's room through inheritance, with nothing on
+ * the document itself to show for it. And this engine looks up per-node and
+ * per-actor maps with `??=` (`this.stash[node] ??= {}`, `this.gap[a] ??= []`):
+ * a node or actor named `constructor` or `__proto__` resolves to an INHERITED
+ * object there, and the write lands on `Object` or `Object.prototype` for the
+ * whole page. So all three are refused wherever a remote string becomes a
+ * key, as the whole key or as any segment of a composite one (`names.x`,
+ * a node id, `col:rid`). Values are never inspected — a cell may say
+ * "constructor".
+ */
+const UNSAFE_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype'])
+export const isUnsafeKey = (s: unknown): boolean =>
+  typeof s === 'string' && s.split(/[^A-Za-z0-9_$]+/).some((seg) => UNSAFE_KEYS.has(seg))
+
+/** Any own object KEY at any depth that is unsafe, or any `id` that is (ids become keys later). */
+function hasUnsafeKeys(v: unknown): boolean {
+  if (!v || typeof v !== 'object') return false
+  // An array's keys are its indices — a 100k-row column must not run the
+  // pattern 100k times. Only its elements can carry keys.
+  if (Array.isArray(v)) {
+    for (const x of v) if (x && typeof x === 'object' && hasUnsafeKeys(x)) return true
+    return false
+  }
+  for (const k of Object.keys(v)) {
+    if (isUnsafeKey(k)) return true
+    const x = (v as Record<string, unknown>)[k]
+    if (k === 'id' && isUnsafeKey(x)) return true
+    if (hasUnsafeKeys(x)) return true
+  }
+  return false
+}
+
+/** An op whose identifiers, or whose payload's keys, could reach a prototype. */
+export function isUnsafeOp(op: Op): boolean {
+  const o = op as unknown as Record<string, unknown>
+  for (const f of ['a', 'n', 'k', 'sh', 'col']) if (isUnsafeKey(o[f])) return true
+  if (Array.isArray(o.keys) && o.keys.some(isUnsafeKey)) return true
+  // payload objects: their keys are written onto nodes and maps
+  for (const f of ['v', 'node', 'vals']) if (hasUnsafeKeys(o[f])) return true
+  return false
+}
+
+export const LOCAL_ONLY_DOC_KEYS: ReadonlySet<string> = new Set([
+  'collab', 'docId', 'readonly', 'template', 'format', 'version', 'policy',
+  // Volatile and history fields: never content, and the kernel engine's own
+  // skipDoc. Dash has no `revisions`/`trail` today; the shared history engine
+  // would bring them, and this set must already be right when it does.
+  'modified', 'revisions', 'trail',
+])
+export const isLocalOnlyDocKey = (k: string): boolean => {
+  const dot = k.indexOf('.')
+  return LOCAL_ONLY_DOC_KEYS.has(dot > 0 ? k.slice(0, dot) : k)
+}
+
 /** node-id separator. U+001F cannot appear in a sheet/column id: import mints
  *  them by slugging (import.ts) and the parser repairs anything else. */
 const NS = '\u001f'
@@ -806,7 +882,12 @@ export class DashSync {
   }
 
   private localOne(doc: DashDoc, p: Patch, ops: Op[]): void {
-    const push = <T extends Op>(o: T): T => { ops.push(o); return o }
+    const push = <T extends Op>(o: T): T => {
+      // Never put this copy's own keys on the wire (LOCAL_ONLY_DOC_KEYS).
+      if (o.op === 'set' && ((o as unknown as SetOp).n ?? DOC_NODE) === DOC_NODE && isLocalOnlyDocKey((o as unknown as SetOp).k)) return o
+      ops.push(o)
+      return o
+    }
     switch (p.op) {
       case 'setCells': {
         // dictLen is a local undo artefact (it truncates a dictionary this edit
@@ -1153,6 +1234,10 @@ export class DashSync {
 
   private applyOne(doc: DashDoc, op: Op, res: ApplyResult): void {
     if (op.a === this.actor) return // our own ops are pre-applied at mint time
+    // The actor names keys below (`this.vv[op.a]`, `this.gap[op.a] ??= []`)
+    // before anything else looks at the op, so it is checked first, and such
+    // an op is not even delivered: no honest replica has that actor id.
+    if (isUnsafeKey(op.a)) return
     const seen = this.vv[op.a] ?? 0
     if (op.s <= seen) return // duplicate
     if (op.s > seen + 1) {
@@ -1173,6 +1258,9 @@ export class DashSync {
   }
 
   private applyEffect(doc: DashDoc, op: Op, res: ApplyResult): void {
+    // Delivered (the sequence advanced, so no gap and no `need` storm) but
+    // without effect. Gap-buffered and parked ops replay through here too.
+    if (isUnsafeOp(op)) return
     switch (op.op) {
       case 'set': this.applySet(doc, op, res); break
       case 'cell': this.applyCell(doc, op, res); break
@@ -1278,6 +1366,11 @@ export class DashSync {
 
   private applySet(doc: DashDoc, op: SetOp, res: ApplyResult): void {
     const node = op.n ?? DOC_NODE
+    // A peer cannot set this copy's room, identity or permissions — see
+    // LOCAL_ONLY_DOC_KEYS. Checked before the register moves only to keep the
+    // state free of registers nothing may ever write; mergeSnapshot refuses
+    // the same keys, so a stray register would be inert either way.
+    if (node === DOC_NODE && isLocalOnlyDocKey(op.k)) return
     if (older(op.l, op.a, this.reg(node, op.k))) return
     if (node === DOC_NODE) {
       this.setReg(node, op.k, [op.l, op.a])
@@ -2329,6 +2422,11 @@ export class DashSync {
   mergeSnapshot(doc: DashDoc, rdoc: DashDoc, rstate: SyncStateJSON): ApplyResult {
     const res: ApplyResult = { changed: false, structure: false }
     if (!rstate || rstate.v !== SYNC_V) return res
+    // Every map in the state is keyed by a remote node id, actor or register
+    // name, and the document's sheets and columns are inserted by their ids —
+    // one unsafe key anywhere and the WHOLE snapshot is refused. A snapshot is
+    // an optimisation; ops still converge without it.
+    if (hasUnsafeKeys(rstate) || hasUnsafeKeys(rdoc)) return res
     this.lamport = Math.max(this.lamport, rstate.lamport ?? 0)
     for (const [a, s] of Object.entries(rstate.vv ?? {})) {
       if ((this.vv[a] ?? 0) < s) {
@@ -2409,6 +2507,8 @@ export class DashSync {
     // --- property registers: the winning side's value lives in its document
     for (const [node, keys] of Object.entries(rstate.regs ?? {})) {
       for (const [key, rr] of Object.entries(keys)) {
+        // the sender's room, identity and permissions are not content
+        if (node === DOC_NODE && isLocalOnlyDocKey(key)) continue
         if (!regNewer(rr, this.reg(node, key))) continue
         this.setReg(node, key, clone(rr))
         if (node !== DOC_NODE) {

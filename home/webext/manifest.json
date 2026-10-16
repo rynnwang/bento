@@ -8,10 +8,16 @@
     "contextMenus",
     "notifications",
     "sidePanel",
-    "storage"
+    "storage",
+    "downloads",
+    "downloads.ui"
   ],
   "optional_permissions": [
     "history"
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
   ],
   "options_page": "src/home.html#settings",
   "background": {
@@ -23,6 +29,7 @@
       "matches": [
         "file:///*.bento.html"
       ],
+      "all_frames": false,
       "js": [
         "src/page-bridge.js"
       ],
@@ -33,6 +40,7 @@
       "matches": [
         "file:///*.bento.html"
       ],
+      "all_frames": false,
       "js": [
         "src/relay.js"
       ],
@@ -67,5 +75,8 @@
       "description": "Open the bento/home panel beside this document"
     }
   },
-  "default_locale": "en"
+  "default_locale": "en",
+  "host_permissions": [
+    "file:///*"
+  ]
 }

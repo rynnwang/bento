@@ -20,7 +20,7 @@
 // text layout changed, and drift in a measuring tool is worse than no tool: it
 // reads as authoritative and is quietly wrong.
 
-import type { BentoDoc, TextElement } from './model.ts'
+import type { BentoDoc, TableElement, TextElement } from './model.ts'
 import { defaultText } from './model.ts'
 import { renderElement } from './render.ts'
 
@@ -119,6 +119,33 @@ function measureInto(host: HTMLElement, spec: TextMeasureSpec, doc: BentoDoc): T
 export function measureElements(els: TextElement[], doc: BentoDoc): TextMeasurement[] {
   if (!els.length) return []
   return withHost((host) => els.map((el) => measureInto(host, specOf(el), doc)))
+}
+
+/** How tall a table's rows actually render, and how far past its box. */
+export interface TableMeasurement {
+  /** height the rows need at the element's width, in slide px, rounded up */
+  height: number
+  /** px the rows run past the element's `h` (0 when they fit) */
+  overflow: number
+}
+
+/**
+ * Measure tables the same way — rendered through `renderElement`, at the
+ * element's own width and height, in one host. A table's `height:100%` is a
+ * MINIMUM (a table never shrinks below its rows), so the rendered table height
+ * is what the rows need. offsetHeight, not the bounding box, so a rotated
+ * table measures its own height and not its rotated extent.
+ */
+export function measureTables(els: TableElement[], doc: BentoDoc): TableMeasurement[] {
+  if (!els.length) return []
+  return withHost((host) => els.map((el) => {
+    const node = renderElement({ ...el, x: 0, y: 0 }, doc)
+    host.appendChild(node)
+    const table = node.querySelector<HTMLElement>('.bento-table')
+    const height = Math.ceil(table ? table.offsetHeight : el.h)
+    node.remove()
+    return { height, overflow: Math.max(0, height - el.h) }
+  }))
 }
 
 const specOf = (el: TextElement): TextMeasureSpec => ({

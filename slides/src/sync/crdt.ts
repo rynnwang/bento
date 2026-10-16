@@ -24,6 +24,7 @@ export * from '../../../kernel/src/sync/crdt.ts'
 
 import { SyncEngine, shape } from '../../../kernel/src/sync/crdt.ts'
 import type { DocShape } from '../../../kernel/src/sync/crdt.ts'
+import { SLIDES_FIELDS } from '../docclass.ts'
 
 /**
  * bento/slides: the document holds `slides`, a slide holds `elements`.
@@ -33,8 +34,13 @@ import type { DocShape } from '../../../kernel/src/sync/crdt.ts'
  * SyncStateJSON and every frame on the deployed relay were minted under them,
  * so changing either would fork every deck in the field from its own copies.
  * scripts/test-sync-equiv.ts exists to make that impossible to do by accident.
+ *
+ * The field-class map (docclass.ts) makes doc-level keys sync by ALLOWLIST:
+ * only 'content' keys are emitted, a non-content key from a peer is refused,
+ * and an unknown key is applied but never re-emitted. No wire or format
+ * change; every key slides synced before is 'content' and still syncs.
  */
-export const SLIDES_SHAPE: DocShape = shape('slides', 'elements')
+export const SLIDES_SHAPE: DocShape = shape('slides', 'elements', 'html', [], SLIDES_FIELDS)
 
 /**
  * The engine bound to bento/slides.

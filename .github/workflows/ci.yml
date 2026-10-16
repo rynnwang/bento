@@ -81,6 +81,12 @@ jobs:
         # without a release, so they must be complete. Packs are downloadable
         # and re-publishable on their own, so they get a floor and a report.
         run: node scripts/test-i18n-coverage.mjs
+      - name: Slides Portuguese is pt-BR; the theme picker has its own words
+        # No European-Portuguese markers (ficheiro, guardar for save,
+        # diapositivo, separador, ecrã, tu forms…) in slides' pt catalog, and the
+        # Appearance picker uses "Light mode"/"Dark mode", never the "Light"
+        # font weight ("Fino").
+        run: node scripts/test-slides-pt-br.mjs
 
       - name: Language packs build and index cleanly
         # Emits every pack and builds the index payload WITHOUT signing (--dry
@@ -95,11 +101,49 @@ jobs:
         working-directory: slides
         run: node_modules/.bin/tsc -b
 
+      - name: Spaces save revisions
+        # Typing runs and remote changes invalidate in-flight saves even while dirty.
+        run: node scripts/test-spaces-save-revisions.ts
+
+      - name: Slides save revisions
+        # An edit, panel keystroke, remote op or undo during a write keeps the
+        # deck dirty; writes queue; the CRDT stamp is taken as each one starts;
+        # ⌘S, auto-save and Update this file all write through the queue.
+        run: node scripts/test-slides-save-revisions.ts
+
+      - name: Slides count-up number rig
+        # #584 ruling: a single dot is a decimal point (12.500), only a
+        # well-formed group with two or more separators is thousands
+        # (1.250.000 settles as authored and counts up grouped).
+        run: node scripts/test-slides-countup-number.ts
+
       - name: Typecheck kernel (standalone)
         # Apps also typecheck kernel transitively through their imports; this
-        # catches kernel-only errors under the kernel's own flags.
+        # catches kernel-only errors under the kernel's own flags. It ALSO
+        # evaluates kernel/src/docfields.typecheck.ts (included via "src"): the
+        # field-class table's type-level test, whose @ts-expect-error lines fail
+        # this step if a guard is weakened (no default cell, 'per-field' only in
+        # the mode row, every mode field has a rule).
         working-directory: slides
         run: node_modules/.bin/tsc -p ../kernel
+
+      - name: Field-classification rig
+        run: node scripts/test-field-class.ts
+
+      - name: Whole-document restore rig (undo / version restore / crash recovery)
+        # applyRestore decides per field from its class, with per-field overrides,
+        # and the restore DIRECTION matters: a version restore ('back') keeps a
+        # live field; crash recovery ('recover') reconciles a live history field
+        # with the newer snapshot. Recover hooks (newestListWins for unsigned
+        # lists) vs the default (signed-safe). Absent never wipes on recover.
+        run: node scripts/test-restore.ts
+
+      - name: Typecheck convert (standalone)
+        # convert/ is a library beside the apps (the CLI and bento.page/import
+        # use it; no shell does), so no app's tsc -b reaches it. Its own flags,
+        # its own pass — the same as kernel's.
+        working-directory: slides
+        run: node_modules/.bin/tsc -p ../convert
 
       - name: Build single-file shell
         working-directory: slides
@@ -147,6 +191,34 @@ jobs:
             --outfile="$RUNNER_TEMP/test-spaces-invite.mjs"
           node "$RUNNER_TEMP/test-spaces-invite.mjs"
 
+      - name: Spaces copy-tier rig
+        # Every copy of a space is built by the kernel's copy table
+        # (docfields.ts projectForCopy) over spaces' exhaustive field map. This
+        # runs each real builder against one source carrying every class of
+        # field, every collab secret, in-file history and an undeclared key, and
+        # asserts the EXACT top-level key set each emits: no history or unknown
+        # key in a reader copy or Copy JSON, history kept in an invite, both
+        # kept in a duplicate. (Bundled: share.ts imports the kernel transport.)
+        run: |
+          slides/node_modules/.bin/esbuild scripts/test-spaces-copytiers.ts --bundle --platform=node --format=esm \
+            --outfile="$RUNNER_TEMP/test-spaces-copytiers.mjs"
+          node "$RUNNER_TEMP/test-spaces-copytiers.mjs"
+
+      - name: Spaces reading-copy rig
+        # "Save a reading copy…" is the file you hand to somebody who will not
+        # edit it, and its whole value is in what the bytes do NOT contain. So
+        # this asserts on the serialized document, not on "the strip function
+        # ran": no room, no read key, no owner/writer/invite private key
+        # anywhere in the text, no comment thread (page-level, block-level or
+        # reply), no history, and the readonly flag set. Prev/Next follows the
+        # tree's order. (The field-by-field key set and the mutation controls
+        # are the copy-tier rig's.) (Bundled: share.ts imports the kernel
+        # transport.)
+        run: |
+          slides/node_modules/.bin/esbuild scripts/test-spaces-reading.ts --bundle --platform=node --format=esm \
+            --outfile="$RUNNER_TEMP/test-spaces-reading.mjs"
+          node "$RUNNER_TEMP/test-spaces-reading.mjs"
+
       - name: Spaces undo rig
         # Every checkpoint used to stringify the WHOLE document: measured on a
         # 200-page, 2.5 MB handbook, fifty edits left an undo depth of NINE,
@@ -160,6 +232,30 @@ jobs:
           slides/node_modules/.bin/esbuild scripts/test-spaces-undo.ts --bundle --platform=node --format=esm \
             --outfile="$RUNNER_TEMP/test-spaces-undo.mjs"
           node "$RUNNER_TEMP/test-spaces-undo.mjs"
+
+      - name: Spaces restore-gate rig
+        # The recovery snapshot and every History entry live in IndexedDB, which
+        # every file:// document shares, so restore is foreign input. Like
+        # slides' restore gate: an entry naming another space is refused, it
+        # never brings collab/readonly/template, block html is sanitized, and
+        # junk, frozen, __proto__ and oversized entries apply nothing.
+        # (Bundled: store.ts imports './model' extensionless.)
+        run: |
+          slides/node_modules/.bin/esbuild scripts/test-spaces-restore-gate.ts --bundle --platform=node --format=esm \
+            --outfile="$RUNNER_TEMP/test-spaces-restore-gate.mjs"
+          node "$RUNNER_TEMP/test-spaces-restore-gate.mjs"
+
+      - name: Spaces in-file history rig
+        # doc.revisions (spaces/src/history.ts): every entry is the kernel's
+        # Revision envelope with the patch under body; what it covers is the
+        # field map's content class minus assets (footnotes, design, templates
+        # included); restore(N) is byte-identical to what was saved at N and
+        # goes through the restore gate; history is a log undo never un-records.
+        # (Bundled: store.ts imports './model' extensionless.)
+        run: |
+          slides/node_modules/.bin/esbuild scripts/test-spaces-history.ts --bundle --platform=node --format=esm \
+            --outfile="$RUNNER_TEMP/test-spaces-history.mjs"
+          node "$RUNNER_TEMP/test-spaces-history.mjs"
 
       - name: Spaces agent-surface rig
         # agent.ts is ~900 lines and shipped with no coverage at all: two of the
@@ -187,6 +283,18 @@ jobs:
             TZ=$tz node scripts/test-spaces-journal.ts
           done
 
+      - name: Spaces timeline and workload rig (several timezones)
+        # A chart is a picture of data that came out of a file somebody mailed
+        # you, and every way it can be wrong is a way it stays silent about it:
+        # a bar in the wrong month still looks like a bar. Half of what this rig
+        # asserts is a date, so it runs in five timezones for the reasons
+        # journal.ts records — including a half-hour DST offset.
+        run: |
+          for tz in UTC Europe/Berlin America/Los_Angeles Pacific/Kiritimati Australia/Lord_Howe; do
+            echo "--- $tz"
+            TZ=$tz node scripts/test-spaces-gantt.ts
+          done
+
       - name: Magic notes evaluator (several timezones)
         # Two failure modes, and the second is what would make the feature worse
         # than not having it: a WRONG answer (silent, confident, in somebody's
@@ -199,19 +307,47 @@ jobs:
             TZ=$tz node scripts/test-spaces-calc.ts
           done
 
+      - name: Trail, periods and progress charts (several timezones)
+        # A trail row's key is a LOCAL day, so the whole bug class here is the
+        # one the journal rig exists for. Kiritimati (UTC+14) and Niue (UTC-11)
+        # bracket every hour where "which day is it" has two answers. The rest
+        # of the rig is behavioural: it writes rows, draws the charts, and
+        # asserts that a gap draws as a gap and never as a zero.
+        # (Bundled: it reaches store.ts, whose imports are extensionless.)
+        run: |
+          slides/node_modules/.bin/esbuild scripts/test-spaces-trail.ts --bundle --platform=node --format=esm \
+            --outfile="$RUNNER_TEMP/test-spaces-trail.mjs"
+          for tz in UTC Europe/Berlin Pacific/Kiritimati Pacific/Niue; do
+            echo "--- $tz"
+            TZ=$tz node "$RUNNER_TEMP/test-spaces-trail.mjs"
+          done
+
       - name: Spaces Markdown round-trip rig
         # The About dialog promises, in eight languages, that "a space is never
         # a dead end … every page exports as Markdown". This is that sentence,
         # checked: the starter space is exported and read back, and no page may
         # come back with materially less text than it went in with, nor may a
         # single block vanish entirely. Block TYPES are deliberately not
-        # asserted — Markdown has no callout, toggle, media embed or board, so a
-        # callout leaving as a blockquote is the format being honest, not a bug.
+        # asserted here — Markdown has no toggle, media embed or board, so a toggle
+        # leaving as a bullet is the format being honest, not a bug (the strict
+        # rig below holds each type to its own bar).
         # (Bundled: the app's imports are extensionless.)
         run: |
           slides/node_modules/.bin/esbuild scripts/test-spaces-roundtrip.ts --bundle --platform=node --format=esm \
             --outfile="$RUNNER_TEMP/test-spaces-roundtrip.mjs"
           node "$RUNNER_TEMP/test-spaces-roundtrip.mjs"
+
+      - name: Spaces Markdown strict rig
+        # The round-trip rig above checks WORDS; this checks TYPES. Every
+        # registered block type is exported and read back, and must return as
+        # the same JSON (ids aside) and re-export to the same text — or be
+        # PINNED with the reason Markdown cannot carry it yet. A pinned type
+        # that starts to round-trip fails too, so closing a gap is a deliberate
+        # edit to the rig. (Bundled: the app's imports are extensionless.)
+        run: |
+          slides/node_modules/.bin/esbuild scripts/test-spaces-md-strict.ts --bundle --platform=node --format=esm \
+            --outfile="$RUNNER_TEMP/test-spaces-md-strict.mjs"
+          node "$RUNNER_TEMP/test-spaces-md-strict.mjs"
 
       - name: Spaces model rig
         # Properties that fail SILENTLY, and that a shipped file cannot be
@@ -232,6 +368,44 @@ jobs:
         # failing request, IndexedDB and a clock, but every one of those
         # mistakes is made in the source.
         run: node scripts/test-spaces-model.ts
+
+      - name: spaces caret + nesting
+        # Which seat an arrow key lands in, and what Tab resolves to. Caret
+        # MOVEMENT needs a browser; the arithmetic under it does not, and the
+        # arithmetic is where Tab-on-the-first-list-item was silently wrong.
+        run: node scripts/test-spaces-caret.ts
+
+      - name: Spaces chrome rig
+        # Every spaces menu is the kernel's createMenu (through
+        # spaces/src/menus.ts). This drives the BUILT shell with trusted CDP
+        # input and asserts what spaces used to get wrong invisibly: arrow keys
+        # in every menu, Escape with focus return, one menu open at a time, no
+        # listener left on the document by a menu closed with Escape (one used
+        # to close the NEXT overlay on its first click), no global shortcut
+        # under a modal, and phone menus that end inside the screen with 44px
+        # rows. Needs the shell built above; a skip in CI is a failure.
+        run: node scripts/test-spaces-chrome.ts
+
+      - name: spaces aliases and unlinked mentions
+        # The assertions that matter in this one are the NEGATIVES: a page
+        # title found inside a code block, an existing link, a bare URL or the
+        # middle of a longer word must all produce NO mention, and a title full
+        # of regex metacharacters must not throw. It also asserts that a name
+        # surrounded by kana matches, which a `\b`-style boundary silently
+        # never does — a rule built for English is a total failure in ja,
+        # zh-Hans and zh-Hant rather than a partial one.
+        run: node scripts/test-spaces-mentions.ts
+
+      - name: Mermaid flowchart ⇄ diagram rig
+        # spaces/src/diagram/: our own Mermaid flowchart parser and layered
+        # layout (the mermaid library is megabytes and nothing is fetched at
+        # runtime). Over a corpus of real README flowcharts: no overlapping
+        # nodes, every connector end exactly where slides' syncConnectors puts
+        # it, byte-identical snapshots, and mermaid → elements → mermaid
+        # semantically equal. Hostile input (caps, __proto__ ids, script in
+        # labels, pathological cycles) inside a time budget, and a size budget
+        # (needs slides' esbuild, installed above).
+        run: node scripts/test-diagram-mermaid.ts
 
       - name: spaces rig manifest
         # Bookkeeping, not a ninth run of the eight steps above. scripts/
@@ -442,6 +616,19 @@ jobs:
             --outfile="$RUNNER_TEMP/test-embed.mjs"
           node --no-warnings "$RUNNER_TEMP/test-embed.mjs"
 
+      - name: File-open / boot document gate rig
+        # Opening a foreign .bento.html and booting a directly-opened file run
+        # bare parseDoc -> render + injectFonts with no structural gate, exposing
+        # the document-level egress the element sanitiser never sees: a
+        # slide.background url(), an -face src from an external asset value,
+        # a weight/style src-breakout. Positive controls (raw) fetch; the opened
+        # document reaches the request log zero times; unknown keys/props from a
+        # NEWER deck survive (format additivity). Browser half needs Chrome.
+        run: |
+          slides/node_modules/.bin/esbuild scripts/test-fileopen-gate.ts --bundle --platform=node --format=esm \
+            --outfile="$RUNNER_TEMP/test-fileopen-gate.mjs"
+          node "$RUNNER_TEMP/test-fileopen-gate.mjs"
+
       - name: Untrusted-markup sanitizer rig
         # Every deck is untrusted input somebody may open, paste or receive over
         # collab, and script in that page owns the collab keys, the plaintext
@@ -459,6 +646,21 @@ jobs:
           slides/node_modules/.bin/esbuild scripts/test-sanitize.ts --bundle --platform=node --format=esm \
             --outfile="$RUNNER_TEMP/test-sanitize.mjs"
           node "$RUNNER_TEMP/test-sanitize.mjs"
+
+      - name: Replace-from-JSON document gate rig
+        # The document text that arrives through window.bento.loadDoc and
+        # "Replace from JSON…" is foreign input, full or compact. It passes the
+        # structural gate (restoregate.ts sanitizeDoc): the open deck keeps its
+        # identity (docId, collab, readonly), unknown keys/props are dropped, and
+        # the document-level egress surfaces the element sanitiser never sees —
+        # slide.background url(), an @font-face src resolved from an external
+        # asset value, a weight/style src-breakout — are neutralised. Positive
+        # controls (raw, un-gated) fetch; the gated document reaches the request
+        # log zero times. Browser half needs Chrome; it self-skips otherwise.
+        run: |
+          slides/node_modules/.bin/esbuild scripts/test-replace-json-gate.ts --bundle --platform=node --format=esm \
+            --outfile="$RUNNER_TEMP/test-replace-json-gate.mjs"
+          node "$RUNNER_TEMP/test-replace-json-gate.mjs"
 
       - name: Export-secrets rig
         # "Copy document JSON" shipped the room's owner private key while the
@@ -495,6 +697,14 @@ jobs:
         # including over another deck the user would later open and trust.
         # Source-shape checks; the Swift half self-skips without a toolchain.
         run: node scripts/test-home-bridge.ts
+
+      - name: home launch handle rig
+        # A page in a native host held no file handle until its first save, so
+        # autosave never wrote the file. home/bridge.js now hands it over through
+        # launchQueue — lazily, so documents from older runtimes keep their first
+        # silent save — and a launch request the host cannot meet is refused,
+        # never turned into an export. Runs the real bridge against a fake host.
+        run: node scripts/test-home-launch.mjs
 
       - name: tray mark is one source
         # tray-icon.svg is the only drawing of the mark. Everything else is
@@ -611,6 +821,38 @@ jobs:
         # request. Every failure mode here is silent by nature.
         run: node scripts/test-webext-update.ts
 
+      - name: WebExtension placement rig
+        # A granted folder has no path; the library can only open a document
+        # by its file:// URL. Placement GUESSES paths and PROVES one by bytes
+        # and by the grant itself — the property that matters is that a wrong
+        # guess (same name, other bytes; same bytes, a copy elsewhere) is never
+        # recorded. Also the title card drawn for a document with no preview.
+        run: node scripts/test-webext-place.ts
+
+      - name: WebExtension file-grant rig
+        # Saving in place for a document outside every granted folder: a
+        # per-file handle the extension holds, the downloads API for Downloads,
+        # the one-time offer. Each must write only the sender's own file, use a
+        # handle only when proven to be that file (name and bytes), and fail to
+        # the browser's own picker — never to nothing.
+        run: node scripts/test-webext-filegrant.ts
+
+      - name: WebExtension save-as rig
+        # "Save a copy" and exports answered in the extension's own window, so
+        # they can land beside the document. The page supplies a name, never a
+        # place; a write lands only where the person chose and only for the
+        # document that asked; a beside-name is never a path or the original.
+        run: node scripts/test-webext-saveas.ts
+
+      - name: WebExtension DocStore rig
+        # A document's crash recovery and member key live in the extension's
+        # origin, partitioned by the file path the browser reports. One document
+        # must never reach another's entries, a payload must never name a
+        # partition, and a moved file's recovery follows it only when the old
+        # path is gone (seen through a grant) and the content hash matches; the
+        # member key never follows.
+        run: node scripts/test-webext-store.ts
+
       - name: WebExtension localisation rig
         # Every failure mode of a message catalogue is silent: a key the code
         # uses but English lacks renders as the key name, a locale missing a key
@@ -618,6 +860,14 @@ jobs:
         # $1 leaves a hole in a translated sentence. All of them are visible
         # only to someone who reads that language.
         run: node scripts/test-webext-i18n.ts
+
+      - name: WebExtension assistant rig
+        # The Assistant is extension-only: the page holds no key, so what the
+        # extension ACCEPTS decides the feature. A frame from an iframe on a
+        # slide, a page the user never allowed, an abort naming another tab's
+        # turn, a describe or an error that echoes the key or the endpoint —
+        # every one of those is silent in a browser and loud here.
+        run: node scripts/test-webext-assistant.ts
 
       - name: Save-intent rig
         # A host polyfilling showSaveFilePicker sees only the options bag, and
@@ -636,6 +886,13 @@ jobs:
         # a host polyfill), reconnect BEFORE serialize so activation stays fresh.
         run: node scripts/test-file-handle.ts
 
+      - name: DocStore (per-document storage under the extension)
+        # Under bento/home, the crash-recovery copy and the member key's private
+        # half live in the extension's per-document store; localStorage keeps
+        # only the public key its readers need. No host, or a host that refuses
+        # or never answers: the old storage, unchanged.
+        run: node scripts/test-docstore.ts
+
       - name: Guarded storage rig
         # localStorage's absence is hostile: reading the PROPERTY throws, so
         # `if (localStorage)` is itself the crash and one bare read at module
@@ -644,6 +901,15 @@ jobs:
         # regression: importing a module that reads storage on load must not
         # throw when storage does.
         run: node scripts/test-storage.ts
+
+      - name: Save queue rig
+        # kernel/src/savequeue.ts serializes writes against one file handle and
+        # acknowledges each by revision, so an edit made WHILE an async write is in
+        # flight is never marked saved and lost (the setDirty-after-write race
+        # every app had). The rig pins serialization, the detached snapshot,
+        # isCurrent() going stale on any later edit or same-id replacement, the
+        # document-swap discard, and that a failed write never poisons the queue.
+        run: node scripts/test-savequeue.ts
 
       - name: App registry rig
         # scripts/apps.mjs drives what a release builds, stages and signs. A
@@ -834,6 +1100,43 @@ jobs:
       - name: bento/dash selection and clipboard
         run: node scripts/test-dash-select.ts
 
+      - name: bento/dash data entry through the real editor
+        # Widget⇥12⇥4.50⏎ has to come home to column A. select.ts had the
+        # Tab-run model and test-dash-select.ts proved it; the editor's finish()
+        # never called it. This one drives typeInto + the cell's own onkeydown.
+        run: node scripts/test-dash-entry.ts
+
+      - name: bento/dash cross-sheet structure
+        # Insert a row on Pipeline and =SUM(Pipeline!D1:D8) on Scratch has to
+        # widen. a1.ts had the scope rule; Grid.shiftFormulas walked one sheet.
+        run: node scripts/test-dash-xshift.ts
+
+      - name: bento/dash sharing state
+        # Start/stop/rotate sharing mark the workbook unsaved (a rotation is
+        # revocation and must reach the file); only a writer copy offers write
+        # auth or calls itself an Editor — an allowlist, failing closed.
+        run: node scripts/test-dash-share-dirty.ts
+
+      - name: bento/dash sync inbound
+        # A peer cannot set this copy's room, docId, readonly, template,
+        # format, version or policy — by relay op, by snapshot, or by a frame
+        # injected on the same-origin BroadcastChannel.
+        run: node scripts/test-dash-sync-inbound.ts
+
+      - name: bento/dash room snapshot and inbound fields
+        # A dash room snapshot carries no never-synced field (collab first); a
+        # remote op or snapshot can't adopt one; no prototype-shaped name off the
+        # wire reaches any object, and a prototype-named actor can't throw.
+        run: node scripts/test-dash-snapshot-collab.ts
+
+      - name: bento/dash save race (kernel SaveQueue)
+        # The unsaved dot goes out only for the revision that was written; a
+        # dropped file's handle swap waits for the write in flight; an in-place
+        # update stops the old shell from writing again. Each guard is
+        # sabotaged in the PR that introduced it; the rig carries two controls
+        # that reproduce the bugs without the guard.
+        run: node scripts/test-dash-save-revisions.ts
+
       - name: bento/dash conditional formatting
         run: node scripts/test-dash-condfmt.ts
 
@@ -907,16 +1210,28 @@ jobs:
         # The pptx importer's resolver is where real decks' fidelity lives --
         # 91% of colour and 71% of run properties are indirect, and every hop
         # fails silently (a backwards clrMap still renders, just dark-on-dark).
-        # Seven rigs, 378 checks, negative controls proven against mutated
-        # implementations; load.ts is the gate that matters: every emitted
-        # document must pass the REAL slides parseDoc with zero validateDoc
-        # errors.
+        # Negative controls proven against mutated implementations; load.ts is
+        # the gate that matters for import: every emitted document must pass the
+        # REAL slides parseDoc with zero validateDoc errors. The runner also
+        # covers the `bento convert` CLI (it needs the shell built above and
+        # Chrome for "it opens"; neither may skip in CI), the delivery chain
+        # behind bento.page/import (signature, pin, version floor, untrusted-
+        # input gate, zip limits, exactly two requests), the built page's CSP,
+        # and the boundary: no app imports convert/, and the engine touches no
+        # DOM global.
         run: node scripts/test-convert.ts
 
       - name: bento/dash zip
         # Verified against real unzip implementations, not only our own reader:
         # a reader and a writer that share a bug agree with each other perfectly.
         run: node scripts/test-dash-zip.ts
+
+      - name: zip decompression-bomb cap
+        # readZip caps each entry's inflated output at min(declared size, a hard
+        # ceiling), aborting the stream the instant it overflows — a crafted
+        # archive that under-declares its size can no longer exhaust memory before
+        # the size check runs. Every check is mutation-proven against a neutered cap.
+        run: node scripts/test-zip-bomb.ts
 
       - name: bento/dash xlsx
         # Both 1900 date epochs, including the leap-year bug — getting it wrong
@@ -999,6 +1314,12 @@ jobs:
         # the work profile (a job/temp worktree). The gate runs before rsync;
         # this rig pins the rule and the order.
         run: node scripts/test-publish-account.ts
+
+      - name: app payload fingerprint — a shell with no payload never passes the publish gates
+        # publish-site's shell-consistency gate hashed the shell and every deck
+        # to null when its matcher went stale, and null === null passed it while
+        # it checked nothing. One shared helper; null is "cannot tell", never a match.
+        run: node scripts/test-apphash.ts
 
       - name: client vouch rig — the other half of read-only
         # Drives a REAL OnlineTransport (kernel's and dash's twin) through a
@@ -1465,6 +1786,11 @@ jobs:
         # line breaks and nothing else; the editor-only "Not rendered" hint;
         # paste and commit keep a formula's backslashes. Real engine, DOM-free.
         run: node scripts/test-slides-math-delims.ts
+      - name: Code fence rig
+        # ``` fences in a text box: which text is a fence (closed only), the
+        # language aliases, autoformat's open-fence guard, and the elements a
+        # fenced box becomes (identity on the first part, no duplicate morph key).
+        run: node scripts/test-slides-code-fence.ts
       - name: Maths coverage rig
         # #551: maths-lite against Temml's WHOLE vocabulary (1,237 commands and
         # environments, frozen offline): no covered command may fall back to
@@ -1472,6 +1798,12 @@ jobs:
         # the recorded floor, and every commonly typed formula renders. The
         # check a fixed sample could not make, which is how #540 slipped by.
         run: node scripts/test-maths-coverage.ts
+      - name: Accent contrast rig
+        # The accent as text reads in both themes: every --accent-ink text use
+        # is audited against the surface behind it and reaches 4.5:1; text on
+        # the orange fill uses --accent-on; labels drawn over the slide carry a
+        # surface halo. Dark --accent-ink was #3a2a00 on dark chrome — 1.09:1.
+        run: node scripts/test-slides-accent-contrast.ts
       - name: Compact document rig
         # The agent authoring form (#422): compactDoc/expandDoc are inverses
         # on the starter deck, expansion equals the editor's insert helpers
@@ -1574,6 +1906,15 @@ jobs:
           if node scripts/test-audience-projection.ts --mutate > /dev/null 2>&1; then
             echo 'negative control passed with the boundary removed'; exit 1; fi
           node scripts/test-audience-projection.ts
+
+      - name: Audience embed rig
+        # An embed's document can carry another deck's envelope (collab +
+        # docId); the handout, the live snapshot and every live op the real
+        # engine emits must arrive without it. Negative control first.
+        run: |
+          if node scripts/test-audience-embed.ts --mutate > /dev/null 2>&1; then
+            echo 'negative control passed with the envelope rule emptied'; exit 1; fi
+          node scripts/test-audience-embed.ts
 
       - name: Broadcast follow-mode rig
         # The audience side's decisions (slides/src/follow.ts): nav by slide
@@ -1771,16 +2112,86 @@ jobs:
         # script rather than sanitising one.
         run: node scripts/test-type-embed.ts
 
+      - name: Type share-copy rig
+        # A view-only copy carries the room it follows and NO private key —
+        # not the owner's, not a legacy writer key, not an invite — whatever the
+        # source document held; an editor copy writes only through its own
+        # fresh, revocable invite. Every copy is minted in type/src/share.ts.
+        run: node scripts/test-type-share.ts
+
+      - name: Slides share-copy rig
+        # The view-only and editor copies (slides/src/share.ts) carry only the
+        # kernel allowlist — no private key, a fresh invite, no sync on a reader —
+        # and strip any EMBEDDED document's envelope. Runs the real builders with
+        # real keys through the ts hook, like the type rig above.
+        run: node scripts/test-slides-share.ts
+
+      - name: Stylesheet brace balance
+        # Every tracked stylesheet's braces balance. A merge seam that eats one
+        # `}` leaves CSS that still builds — an unclosed `@media print {` makes
+        # every later rule print-only, and the app ships unstyled while tsc, the
+        # build and the shell gate all pass.
+        run: node scripts/test-css-balance.ts
+
       - name: Type chrome rig
         # Where controls live: nothing in two menus, no inserts in the
         # overflow, and every element the chrome reaches for actually exists —
         # a null lookup there has silently broken the boot twice.
         run: node scripts/test-type-chrome.ts
 
+      - name: Type restore-gate rig
+        # A snapshot kept in the browser (Unsaved changes banner, Version
+        # history) is foreign input: on file:// any local page can write it.
+        # Restoring one never brings its own docId, room/keys or mode, and an
+        # honest one keeps the open file's sharing. Replace from JSON — a
+        # document the person chose — is NOT gated. Counterpart of slides'.
+        run: node scripts/test-type-restore-gate.ts
+
+      - name: Type signature-chain rig
+        # Canonical JSON and the chained signatures over it. A canonicalization
+        # bug does not crash — it silently fails valid documents or passes
+        # tampered ones — so this pins determinism, key order by UTF-16 code
+        # unit, volatile fields at every depth, and that the signer's NAME is
+        # inside the signed text (it was once only displayed beside the tick).
+        run: node scripts/test-type-canon.ts
+
+      - name: Type compare rig
+        # Comparing with another file is a VIEW: nothing commits, and the diff
+        # runs from that file to this one. Asserts which side is <del> and which
+        # is <ins>, because a reversed diff keeps the same change count and a
+        # count-only check cannot see it.
+        run: node scripts/test-type-compare.ts
+
+      - name: Type hanging-punctuation rig
+        # Optical margin alignment may only PAINT. A line break is held only
+        # when each line's first and last character both stay on it — a check
+        # on first characters alone passed a real reflow.
+        run: node scripts/test-type-micro.ts
+
+      - name: Type fields and mail-merge rig
+        # Fields are atoms resolved at render, never stored resolved. Merged
+        # letters get a fresh docId each and carry no credentials, signatures,
+        # comments or revision history from the template.
+        run: node scripts/test-type-fields.ts
+
+      - name: Type live-cells rig
+        # A field bound to an embedded sheet by row label and column heading,
+        # so inserting, reordering or sorting rows cannot re-point a sentence
+        # at a different number.
+        run: node scripts/test-type-live.ts
+
       - name: Clipboard embedded-font rig
         run: |
           slides/node_modules/.bin/esbuild scripts/test-clipboard.ts --bundle --platform=node --format=esm --outfile="$RUNNER_TEMP/test-clipboard.mjs"
           node "$RUNNER_TEMP/test-clipboard.mjs"
+
+      - name: Restore gate rig
+        # A snapshot kept in the browser (recovery banner, Version history) is
+        # foreign input: gated like a pasted clip, and it never brings its own
+        # docId, live-session credentials or file mode.
+        run: |
+          slides/node_modules/.bin/esbuild scripts/test-slides-restore-gate.ts --bundle --platform=node --format=esm --outfile="$RUNNER_TEMP/test-slides-restore-gate.mjs"
+          node "$RUNNER_TEMP/test-slides-restore-gate.mjs"
 
       - name: CRDT property-removal rig
         # Removing a property travels as a `set` op with `v` ABSENT, and the
@@ -1875,6 +2286,41 @@ jobs:
         # dirty flag — so a surviving slides assumption shows up there.
         run: node --no-warnings scripts/test-sync-session.ts
 
+      - name: Room snapshot carries no capability fields
+        # Every snapshot path (relay upload, fork broadcast, re-snap, flush-time
+        # fork snap) builds from one helper that strips the never-synced fields.
+        run: node --no-warnings scripts/test-sync-snapshot-collab.ts
+
+      - name: Remote ops and snapshots can't rewrite identity, capability or modes
+        # The never-synced set is also the receive filter (applySet and
+        # mergeSnapshot), and no prototype-shaped name reaches any object.
+        run: node --no-warnings scripts/test-sync-inbound-docfields.ts
+
+      - name: Doc-level sync allowlist (field-class map)
+        # The other half of the never-synced set: when an app binds a class map,
+        # a peer emits only content-class doc keys and ignores non-content ones
+        # inbound, whatever the sender claims; an unknown key (a newer build's
+        # field) is applied but never re-emitted. With no map it is byte-for-byte
+        # the shipped denylist. skipDoc is the floor under both.
+        run: node scripts/test-sync-allowlist.ts
+
+      - name: Sync override for a history-class key (shape().syncHistory)
+        # A field's copy class and its sync decision can diverge: type classes
+        # `comments` history (dropped from reader/export copies) but comments
+        # must still flow live. syncHistory names such a key — emitted and
+        # accepted though non-content, with its 1.2.7 wire shape unchanged so a
+        # bound build stays mixed-version-compatible with an unbound one.
+        # Restricted to history-class keys at runtime (shape throws) and at
+        # compile time (historySyncKeys); skipDoc is still the floor.
+        run: node scripts/test-sync-history-override.ts
+
+      - name: Slides sync allowlist rig
+        # Slides binds its field-class map (slides/src/docclass.ts) into
+        # SLIDES_SHAPE: every key that synced before is still content, a
+        # non-content or unknown doc key mints no op, non-content is refused
+        # inbound, and an unknown key from a peer is applied but never echoed.
+        run: node scripts/test-slides-sync-allowlist.ts
+
       - name: the spaces binding of the sync session
         # Only what bento/spaces answers DIFFERENTLY, because three of the five
         # host answers are not slides' answers and each one is invisible until
@@ -1908,3 +2354,121 @@ jobs:
         # Real UI and serialization, offline; delayed mock writes expose save races.
         run: |
           node scripts/test-slides-font-lifecycle-browser.mjs
+      - name: Write chrome follows the copy's role in Chromium
+        # canWriteDeck is an allowlist that fails closed: an audience, reader or
+        # unknown-role copy arriving in a running editor (dropped, loadDoc) gets
+        # no write actions and is locked; owner and writer copies keep theirs.
+        run: node scripts/test-slides-audience-gate-browser.mjs
+      - name: PowerPoint converter links in Chromium
+        # Save as → Import PowerPoint… (/convert?from=pptx) and Export for
+        # PowerPoint… (/convert), in that order after Replace from JSON…, each
+        # opens only its URL in a new tab with no opener, and says it needs
+        # the network.
+        run: node scripts/test-slides-import-link-browser.mjs
+      - name: Under-specified documents boot in Chromium
+        # parseDoc fills required fields only where absent and drops elements
+        # that cannot render; unknown keys and element types survive (additivity).
+        run: node scripts/test-slides-minimal-doc-browser.mjs
+      - name: Top bar in Chromium
+        # 30px row and 44px phone targets, the wordmark as a named button, Save
+        # primary in both themes, and N language rebuilds leaving one set of
+        # window/document listeners and bar observers.
+        run: node scripts/test-slides-topbar-browser.mjs
+      - name: Top bar holds still in Chromium
+        # #546: a real auto-save "Saved" flash and a file-chip change (rename to
+        # the file's name, then undo) leave Undo/Redo exactly where they were,
+        # on the desktop and the folded phone bar.
+        run: node scripts/test-slides-topbar-stable-browser.mjs
+      - name: Chrome rulings in Chromium
+        # D2 menu descriptions (readable both themes, ARIA-wired, scroll on a
+        # short window), D4 dialog titles, D8 help shortcuts, the compact Save
+        # caret, phone menu rows, the designed focus ring, dark menu shadow.
+        run: node scripts/test-slides-chrome-rulings-browser.mjs
+      - name: Code in a text box in Chromium
+        # Real typing: a ``` fence becomes a Code element (in place, or split
+        # out of the text around it), select + ` wraps lines in <code>, pasted
+        # fences convert, and an unclosed fence stays text.
+        run: node scripts/test-slides-code-fence-browser.mjs
+      - name: Copy several slides in Chromium
+        # Two selected thumbnails → ⌘C copies both, in order; a Shift-click
+        # range across a parent copies parents only, never its states; plural
+        # and singular toasts.
+        run: node scripts/test-slides-copy-slides-browser.mjs
+      - name: Rounded tables in Chromium
+        # A rounded table whose rows outgrow its box shows its last row (#494),
+        # keeps rounded corners on its real bottom, and a short one still
+        # fills its box; tables without a radius are unchanged.
+        run: node scripts/test-slides-table-radius-browser.mjs
+      - name: Paste position in Chromium
+        # ⌘C then ⌘V onto another slide keeps the element's position; onto the
+        # source slide it steps +20 and cascades (#569).
+        run: node scripts/test-slides-paste-position-browser.mjs
+      - name: Save queue in Chromium
+        # Real ⌘S and auto-save with the file write held open: an edit made
+        # during a write stays dirty, writes never overlap, the dot goes out
+        # only when the deck on screen is the one on disk.
+        run: node scripts/test-slides-save-browser.mjs
+      - name: Recovery-off notice in Chromium
+        # Under a per-document store host that refuses the recovery copy, the
+        # save status says crash recovery is off (approved wording), once, held
+        # long enough to read; the dot stops claiming a backup; a host that
+        # keeps the copy gets no message; never for an encrypted deck.
+        run: node scripts/test-slides-recovery-off-browser.mjs
+      - name: Save a copy and the older-snapshot banner in Chromium
+        # "Save a copy…" says "Copy saved — you are still editing the original",
+        # keeps the chip, title and dot on the original, and the next ⌘S writes
+        # the original with no picker; an older recovery snapshot gets the
+        # warning banner (Keep the file is the default and deletes nothing), a
+        # newer one the plain banner that claims nothing.
+        run: node scripts/test-slides-save-copy-browser.mjs
+      - name: Ghost Cut in Chromium
+        # ⇧⌘X fades the selection by CSS (shadowed elements too) and copies it;
+        # a ghost is never selected and the pointer passes through it; Esc
+        # restores; paste moves it to the pointer in one undo step, across
+        # slides, without two elements sharing an id on one slide.
+        run: node scripts/test-slides-ghost-cut-browser.mjs
+      - name: Bullet indent in Chromium
+        # Tab / Shift+Tab nest and un-nest list items (and typed bullets) while
+        # editing, with the caret kept and ⌘Z right after; the panel's Indent /
+        # Outdent do the same; committed, one undo step; Tab outside a list —
+        # a plain box, a table cell — is unchanged.
+        run: node scripts/test-slides-bullet-indent-browser.mjs
+      - name: Leaving an inline code run in Chromium
+        # A text box that already ends a line in `code` (reopened, pasted):
+        # typing at the end of that line is plain text, at the box's end or
+        # before a line break; opening and closing a box changes nothing.
+        run: node scripts/test-slides-code-run-exit-browser.mjs
+      - name: Connectors route on every slide in Chromium
+        # #493: a deck saved or loaded with stale connector endpoints opens with
+        # every slide's connectors on their elements' borders (thumbnail too),
+        # without dirtying the deck or making an undo step.
+        run: node scripts/test-slides-connectors-browser.mjs
+      - name: Caret at the start of a line in Chromium
+        # #547: with the caret at a text box's left edge, nothing paints over
+        # it — the editing ring is an outline held off the box, Moveable's
+        # leftover lines are hidden for the edit, and a screenshot of the strip
+        # beside the caret has no ring-blue in it; the text does not move.
+        run: node scripts/test-slides-caret-ring-browser.mjs
+
+  spaces-save-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install browser test runtime
+        # Pinned outside app packages: browser automation is not shipped in documents.
+        run: |
+          npm install --prefix "$RUNNER_TEMP/bento-browser" --no-package-lock --ignore-scripts playwright@1.61.1
+          "$RUNNER_TEMP/bento-browser/node_modules/.bin/playwright" install --with-deps chromium
+          echo "PLAYWRIGHT_MODULE=$RUNNER_TEMP/bento-browser/node_modules/playwright/index.mjs" >> "$GITHUB_ENV"
+      - name: Build the tested standalone documents
+        run: |
+          npm ci --prefix spaces
+          npm run build:single --prefix spaces
+      - name: Exercise the packaged documents in Chromium
+        # Real UI and serialization, offline; delayed mock writes expose save races.
+        run: |
+          node scripts/test-spaces-save-browser.mjs

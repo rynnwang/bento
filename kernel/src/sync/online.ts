@@ -13,6 +13,8 @@
 import type { Op, SyncStateJSON } from './crdt.ts'
 import type { Frame, HostStore, RefusalCode, SyncDoc, SyncSession, Transport } from './session.ts'
 import { lsGet, lsSet } from '../storage.ts'
+import { docStore, getJSON, setJSON } from '../docstore.ts'
+import { carryThroughRotation } from '../docfields.ts'
 import { offlineEnabled } from '../update.ts'
 // Every request in the app goes through the one chokepoint (kernel/src/net.ts)
 // so the offline switch cannot be forgotten — see GHSA-5c3x-xqp6-g94r.
@@ -91,16 +93,84 @@ export async function mintInvite(ownerPrivB64: string, role: 'writer' | 'comment
   return { pub: kp.pub, priv: kp.priv, role, ...(exp ? { exp } : {}), sig }
 }
 
-/** This device's member identity for a doc — minted once, kept in localStorage,
- *  NEVER in the file (the file travels; a device key must not). */
+/** Member identities this page has resolved AND the store holds, by docId (one
+ *  host round trip per document per page, not one per connect). */
+const memberCache = new Map<string, { pub: string; priv: string }>()
+/** Identities the host has not yet stored (it refused, or did not answer in
+ *  time): used for this page, offered to the host again on the next call. */
+const unstored = new Map<string, { pub: string; priv: string }>()
+
+/** This device's member pubkey for a doc, as resolved in this page. The
+ *  presence beat reads it synchronously. */
+export function cachedMemberPub(docId: string): string | undefined {
+  return (memberCache.get(docId) ?? unstored.get(docId))?.pub
+}
+
+/** This device's member identity for a doc — minted once, NEVER in the file
+ *  (the file travels; a device key must not).
+ *
+ *  Under a host with a per-document store (docstore.ts), the PRIVATE key lives
+ *  there, out of the storage origin every local file shares. localStorage keeps
+ *  only the PUBLIC key under the same name, because the apps' People views read
+ *  `bento-member-<docId>`.pub to recognise this device — and a pubkey is public
+ *  anyway. The first time, a full key this browser already holds is ADOPTED
+ *  (the device keeps its People entry) and its private half removed from that
+ *  origin.
+ *
+ *  While that host is present NOTHING falls back to the shared origin:
+ *  - a READ the host can't answer THROWS — it neither mints a key (that would
+ *    change this device's identity) nor writes one; the caller retries;
+ *  - a WRITE the host refuses or doesn't answer keeps the identity for this
+ *    page and offers it to the host again on the next call; the private key is
+ *    never written to localStorage.
+ *  Without such a host, the whole key lives in localStorage as before. */
 export async function deviceIdentity(docId: string): Promise<{ pub: string; priv: string }> {
+  const hit = memberCache.get(docId)
+  if (hit) return hit
   const k = `bento-member-${docId}`
-  try {
-    const saved = lsGet(k)
-    if (saved) return JSON.parse(saved)
-  } catch { /* storage unavailable → ephemeral identity */ }
+  /** a FULL identity from localStorage — a pub-only mirror is not one */
+  const saved = (): { pub: string; priv: string } | null => {
+    try {
+      const s = lsGet(k)
+      const v = s ? JSON.parse(s) as { pub?: string; priv?: string } : null
+      return v?.pub && v.priv ? { pub: v.pub, priv: v.priv } : null
+    } catch { return null }
+  }
+  const ds = docStore()
+  if (ds) {
+    const kept = unstored.get(docId)
+    let held: { docId?: string; pub?: string; priv?: string } | null
+    try {
+      held = await getJSON(ds, 'memberkey')
+    } catch (e) {
+      // can't read the host: an identity already in use this page carries on;
+      // otherwise fail this attempt — never mint or write while blind
+      if (kept) return kept
+      throw e
+    }
+    // the entry is per FILE, so check it is this document's before using it
+    if (held?.docId === docId && held.pub && held.priv) {
+      const id = { pub: held.pub, priv: held.priv }
+      unstored.delete(docId)
+      memberCache.set(docId, id)
+      lsSet(k, JSON.stringify({ pub: id.pub }))
+      return id
+    }
+    const id = kept ?? saved() ?? await mintKeypair()
+    if (await setJSON(ds, 'memberkey', { docId, pub: id.pub, priv: id.priv }) === 'stored') {
+      unstored.delete(docId)
+      memberCache.set(docId, id)
+      lsSet(k, JSON.stringify({ pub: id.pub })) // the private half leaves this origin
+      return id
+    }
+    unstored.set(docId, id) // this page only; the host is offered it again next time
+    return id
+  }
+  const prior = saved()
+  if (prior) { memberCache.set(docId, prior); return prior }
   const id = await mintKeypair()
   lsSet(k, JSON.stringify(id))
+  memberCache.set(docId, id)
   return id
 }
 
@@ -372,7 +442,16 @@ export class OnlineTransport implements Transport {
       // offload. Sent by every writer shape; honoured only after `prove`.
       this.url = `${room}?tok=${tok}&bt=1&w=${a.pub}`
     } else if (a?.kind === 'chain') {
-      const id = await deviceIdentity(this.docId)
+      // Under a host with per-document storage, this device's key can't be
+      // READ while the host is busy, and deviceIdentity then fails rather than
+      // invent a new key (that would change this device's identity). Wait and
+      // retry; init is not awaited, so a throw here would leave the socket
+      // never connecting. Without such a host this never fails.
+      let id: { pub: string; priv: string } | null = null
+      for (let wait = 2000; !id; wait = Math.min(wait * 2, 30_000)) {
+        if (this.closed) return
+        try { id = await deviceIdentity(this.docId) } catch { await new Promise((r) => setTimeout(r, wait)) }
+      }
       try { this.signKey = await importSignKey(id.priv) } catch { this.signKey = null }
       this.myPub = id.pub
       const iv = a.invite
@@ -995,6 +1074,19 @@ export function joinFromDoc(session: SyncSession, store: Store): OnlineTransport
   return active
 }
 
+/** Apply a sharing/collab change WITHOUT an undo step. collab is per-copy
+ *  capability + config, never document content, so a user's Cmd-Z must not
+ *  toggle it: an undone "Stop sharing" left the flag ON with no connection (UI
+ *  and session disagreeing), and an undone key rotation would restore a revoked
+ *  key. The doc is still marked dirty so the change saves, and 'doc' is emitted
+ *  so the Live UI refreshes, but it never goes through store.commit (which pushes
+ *  undo). collab is excluded from the sync diff, so emitting 'doc' sends no op. */
+function markShared(store: Store, fn: () => void) {
+  fn()
+  store.setDirty(true)
+  store.emit('doc')
+}
+
 /** flip sharing on and connect — the "Start live session" action.
  * Credentials already exist (minted at creation); this only arms them. */
 export async function startSharing(session: SyncSession, store: Store): Promise<OnlineTransport | null> {
@@ -1002,9 +1094,9 @@ export async function startSharing(session: SyncSession, store: Store): Promise<
   if (active) return active
   if (!store.doc.collab) {
     const creds = await mintCollab()
-    store.commit(() => { store.doc.collab = creds })
+    markShared(store, () => { store.doc.collab = creds })
   }
-  store.commit(() => { store.doc.collab!.on = true })
+  markShared(store, () => { store.doc.collab!.on = true })
   return joinFromDoc(session, store)
 }
 
@@ -1028,9 +1120,7 @@ export function stopSharing(session: SyncSession, store: Store) {
     active = null
   }
   if (store.doc.collab && store.doc.collab.on !== false) {
-    store.commit(() => {
-      store.doc.collab!.on = false
-    })
+    markShared(store, () => { store.doc.collab!.on = false })
   }
 }
 
@@ -1039,8 +1129,10 @@ export function stopSharing(session: SyncSession, store: Store) {
 export async function rotateKeys(session: SyncSession, store: Store) {
   stopSharing(session, store)
   const fresh = await mintCollab()
-  store.commit(() => {
-    const sync = store.doc.collab?.sync
-    store.doc.collab = sync ? { ...fresh, sync } : fresh
+  markShared(store, () => {
+    // fresh keys = the revocation; carry the rotate-survivors (sync, links) from
+    // the old block (kernel/src/docfields.ts COLLAB_ROTATE_KEEP). Not a commit —
+    // a key reset is connection state, not an undoable edit (#605).
+    store.doc.collab = carryThroughRotation(fresh, store.doc.collab)
   })
 }

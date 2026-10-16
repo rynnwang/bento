@@ -2,6 +2,7 @@
 // Copyright (c) 2026 The Bento authors
 import { inLinearFlow } from './model'
 import type { BentoDoc, Slide, SlideElement } from './model'
+import { FROM_LIVE } from './restoregate'
 
 export type StoreEvent =
   | 'doc'        // any document mutation
@@ -31,6 +32,11 @@ export class Store {
   currentIndex = 0
   selection: string[] = []
   dirty = false
+  /** Advances on EVERY mutation — a local edit, a panel keystroke inside one
+   *  undo group, a remote op — even while already dirty. The save queue
+   *  (saving.ts) clears the dirty flag only if this has not moved since the
+   *  bytes it wrote were taken. Never decreases; never saved. */
+  revision = 0
   /** editor-only: which showOnHover set the canvas previews (never saved) */
   hoverPreview: string | null = null
 
@@ -54,11 +60,16 @@ export class Store {
   }
 
   emit(event: StoreEvent) {
+    if (event === 'doc') this.revision++
     this.listeners.get(event)?.forEach((fn) => fn())
   }
 
   get slide(): Slide {
     return this.doc.slides[this.currentIndex]
+  }
+
+  slideById(slideId: string): Slide | undefined {
+    return this.doc.slides.find(slide => slide.id === slideId)
   }
 
   element(id: string): SlideElement | undefined {
@@ -167,7 +178,17 @@ export class Store {
     if (!entry) return
     const before = this.captureView()
     to.push({ doc: JSON.stringify(this.doc), view: before })
+    const live = this.doc // identity/capability is the open file's, not undoable
     this.doc = JSON.parse(entry.doc)
+    // Undo/redo move CONTENT, never identity: keep the live docId, collab and
+    // read-only mode (restoregate's FROM_LIVE) rather than the snapshot's, so
+    // Cmd-Z can't flip sharing back on, resurrect a pre-"Duplicate as new deck"
+    // docId, or drop a present-only save's mode. One shared list, no second copy.
+    for (const k of FROM_LIVE) {
+      const v = (live as unknown as Record<string, unknown>)[k]
+      if (v !== undefined) (this.doc as unknown as Record<string, unknown>)[k] = v
+      else delete (this.doc as unknown as Record<string, unknown>)[k]
+    }
     this.reconcileView(before, entry.view)
     this.setDirty(true)
     this.emit('doc')
@@ -177,6 +198,8 @@ export class Store {
   }
 
   setDirty(dirty: boolean) {
+    // Remote apply marks dirty even when already dirty — that is a mutation too.
+    if (dirty) this.revision++
     if (this.dirty === dirty) return
     this.dirty = dirty
     this.emit('dirty')

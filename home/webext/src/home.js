@@ -15,8 +15,17 @@
 import { getGrants, putGrants, status } from './status.js'
 import { listDocuments, describe, newDocument, duplicate, rename, APPS } from './library.js'
 import { prefixFor } from './route.js'
-import { learnPrefix, GRANT, get, put } from './db.js'
+import { learnPrefix, prefixes, recentOpened, GRANT, get, put } from './db.js'
+import { placeFolder, scanDisk, fileUrl, blockedFolders } from './place.js'
+import { listFileGrants, addFileGrant, dropFileGrant, handleIsPath, downloadsUnusable, setDownloadsUnusable } from './filegrant.js'
+import { startInFor } from './grantflow.js'
 import { checkForUpdate, pendingUpdate, isSelfManaged, autoCheckEnabled, setAutoCheck } from './update.js'
+import {
+  CONFIG_KEY, ALLOWED_KEY, MODELS_KEY, BUILTIN_KEY, PROVIDERS, normalizeConfig, builtinAvailability,
+  check as checkAssistant, permissionOriginOf, listModels, modelsKey, contextTokensOf, builtinContext,
+  activeConfig, providerConfig, withProvider, pickerRows, MODEL_RE,
+} from './assistant.js'
+import { DEFAULTS as PROVIDER_DEFAULTS, pickDefault, nativeSearch } from './providers.js'
 import { t, localize, LOCALES, localeLabel, localeOverride, setLocale, initI18n }
   from './i18n.js'
 
@@ -46,9 +55,56 @@ import { t, localize, LOCALES, localeLabel, localeOverride, setLocale, initI18n 
  * `dir.resolve()` agree with the path's own tail. A path that cannot be proven
  * to be inside a granted folder teaches nothing.
  */
+/**
+ * Place every unplaced grant by PROBING THE DISK (place.js): the folder's
+ * name under each likely parent, the bytes of one of its documents compared
+ * at that path, the grant asked to confirm. No permission prompt, no
+ * history, nothing from the person — which is why it runs on its own when
+ * the library loads, and first when they press "Find my folders". A folder
+ * it cannot place is simply left for the history survey and the Finder
+ * route; a folder it can is openable before they have wondered why not.
+ *
+ * Once per folder per page load: the fetches are cheap but not free, and a
+ * folder that is not where the guesses look will not be there a second later.
+ */
+const placed = new Set()
+/** The last attempt per folder, for the banner: { probes, found, first } */
+const placement = new Map()
+async function placeFolders({ force = false } = {}) {
+  if (state.fileAccess === false) { console.info('[bento/home] placing: file-URL access is off, nothing to probe with'); return 0 }
+  let learned = 0
+  const known = await prefixes()
+  const grants = await getGrants()
+  for (const dir of grants) {
+    if (known[dir.name] || (!force && placed.has(dir.name))) continue
+    placed.add(dir.name)
+    if (await dir.queryPermission({ mode: 'readwrite' }) !== 'granted') continue
+    // the shallowest document in the grant is the cheapest fingerprint; an
+    // empty grant gets a temporary marker instead (place.js)
+    const probe = state.docs.filter((d) => d.folder === dir.name && !d.scanned).sort((a, b) => a.rel.length - b.rel.length)[0] ?? null
+    try {
+      // Said in the page's console: placement is silent by design, and the
+      // one question when it does nothing is whether the disk answered at all.
+      const tried = []
+      const deps = { fetch: async (u) => { const r = await fetch(u); tried.push(`${r.ok ? 'ok ' : 'no '}${u}`); return r }, prefixFor }
+      const prefix = await placeFolder(dir, probe, known, deps).catch((e) => { tried.push(`threw ${e?.message || e}`); return null })
+      console.info(`[bento/home] placing "${dir.name}":`, prefix ?? 'not found', `(${tried.length} probes)`, tried.slice(0, 12))
+      placement.set(dir.name, { probes: tried.length, found: !!prefix, first: tried[0] ?? '' })
+      if (prefix) { await learnPrefix(dir.name, prefix); known[dir.name] = prefix; learned++ }
+    } catch { /* a guess that cannot be made is not an error */ }
+  }
+  return learned
+}
+
 async function locateFolders() {
+  // The disk first: it needs nothing from the person. History only for what
+  // is still unplaced after that.
+  scanned = null
+  const fromDisk = await placeFolders({ force: true })
+  await load()
+  if (!state.docs.some((d) => !d.path)) return { learned: fromDisk, declined: false }
   const granted = await chrome.permissions.request({ permissions: ['history'] })
-  if (!granted) return { learned: 0, declined: true }
+  if (!granted) return { learned: fromDisk, declined: fromDisk === 0 }
 
   let learned = 0
   try {
@@ -77,7 +133,7 @@ async function locateFolders() {
     // answered would be taking more than was asked for.
     await chrome.permissions.remove({ permissions: ['history'] }).catch(() => {})
   }
-  return { learned, declined: false }
+  return { learned: learned + fromDisk, declined: false }
 }
 
 /**
@@ -197,6 +253,9 @@ const ago = (ms) => {
 // documents are drawn within it. Two different words on purpose — they were
 // briefly the same one, and "view" then meant two things one line apart.
 const state = { docs: [], folder: null, q: '', sort: 'recent', view: 'docs', layout: 'icons' }
+// Readable from the page's console (`__bentoHome.folder`), for a question
+// like "why is the grid drawn this way" without a reload-and-watch.
+globalThis.__bentoHome = state
 
 /**
  * Settings is a VIEW here, not a separate page.
@@ -223,7 +282,7 @@ const VIEW_HASH = { docs: '', settings: '#settings', help: '#help' }
 
 function show(view) {
   state.view = view
-  const want = VIEW_HASH[view] ?? ''
+  const want = view === 'settings' && location.hash === '#assistant' ? '#assistant' : (VIEW_HASH[view] ?? '')
   if (location.hash !== want) {
     try { history.replaceState(null, '', want || location.pathname) } catch { /* not fatal */ }
   }
@@ -252,21 +311,131 @@ function toast(text) {
 }
 
 // ------------------------------------------------------------------ loading
+/**
+ * Documents found on disk WITHOUT a grant (place.js scanDisk): Chrome will
+ * not grant Documents, Desktop or Downloads as a whole, but it will let the
+ * extension read them, so the library lists what is there and opens it by
+ * URL. A grant is what makes a document save in place; until its folder has
+ * one, the card says so and offers it. Scanned once per page load; "Find my
+ * folders" scans again.
+ */
+let scanned = null
+async function scannedDocs({ fresh = false } = {}) {
+  if (state.fileAccess === false) return []
+  if (scanned && !fresh) return scanned
+  let found = []
+  try { found = await scanDisk({ fetch: (u) => fetch(u) }) } catch (e) { console.info('[bento/home] scan failed:', e?.message || e); found = [] }
+  console.info(`[bento/home] scan: ${found.length} documents under the usual places`)
+  // the folders the OS keeps from the browser, for the notice
+  try { state.blocked = await blockedFolders({ fetch: (u) => fetch(u) }) } catch { state.blocked = [] }
+  if (state.blocked.length) console.info('[bento/home] the OS refuses the browser these folders:', state.blocked)
+  // the worker reads this to tell two same-named files apart when a file grant is used
+  chrome.storage.local.set({ lastScan: found.map((f) => f.path).slice(0, 2000) }).catch(() => {})
+  scanned = found.map((f) => ({
+    name: f.name, named: true, base: f.name.replace(/\.bento\.html$/i, ''),
+    folder: f.dir.split('/').filter(Boolean).pop() ?? f.dir, rel: [f.name], path: f.path,
+    handle: diskHandle(f.path, f.name), parent: null, scanned: true, dir: f.dir,
+  }))
+  return scanned
+}
+
+/** A handle-shaped reader over file:// for a document the extension has no grant for. */
+function diskHandle(path, name) {
+  return {
+    name,
+    kind: 'file',
+    async getFile() {
+      const r = await fetch(fileUrl(path))
+      if (!r.ok) throw new Error(`cannot read ${name}`)
+      const blob = await r.blob()
+      const lm = Date.parse(r.headers.get('last-modified') ?? '') || 0
+      return new File([blob], name, { lastModified: lm, type: 'text/html' })
+    },
+  }
+}
+
+/** The mtime of a document on disk from one byte of it: file:// answers a Range with Last-Modified. */
+async function diskModified(path) {
+  try {
+    const r = await fetch(fileUrl(path), { headers: { range: 'bytes=0-0' } })
+    return Date.parse(r.headers.get('last-modified') ?? '') || 0
+  } catch { return 0 }
+}
+
 async function load() {
   const s = await status()
   state.grants = s.folders.length
   state.fileAccess = s.files
   state.selfManaged = await isSelfManaged()
-  const docs = await listDocuments()
+  let docs = await listDocuments()
+  const onDisk = await scannedDocs()
+  // A scan can PLACE a granted folder outright: a found path that ends in
+  // `<folder>/<route>` of an unplaced document, proven by the grant, is its
+  // prefix — no guessing needed. Then the list is taken again, placed.
+  if (onDisk.length && docs.some((d) => !d.path)) {
+    const grants = await getGrants()
+    let learned = false
+    for (const d of docs.filter((x) => !x.path)) {
+      const suffix = `/${d.folder}/${d.rel.join('/')}`
+      const hit = onDisk.find((f) => f.path.endsWith(suffix))
+      const dir = hit && grants.find((g) => g.name === d.folder)
+      if (!dir) continue
+      const prefix = await prefixFor(dir, hit.path).catch(() => null)
+      if (prefix) { await learnPrefix(d.folder, prefix); learned = true }
+    }
+    if (learned) docs = await listDocuments()
+  }
+  // Granted documents first; a found one that is the same file (by path) is
+  // the granted one and is not listed twice. Then the documents OPENED in
+  // this browser that neither covers — dragged in from anywhere.
+  const have = new Set(docs.map((d) => d.path).filter(Boolean))
+  const extra = onDisk.filter((f) => !have.has(f.path))
+  for (const f of extra) have.add(f.path)
+  const opened = await recentOpened().catch(() => ({}))
+  for (const [path, at] of Object.entries(opened)) {
+    if (have.has(path) || !/\.bento\.html$/i.test(path)) continue
+    const name = path.split('/').pop()
+    const dir = path.slice(0, path.lastIndexOf('/'))
+    extra.push({ name, named: true, base: name.replace(/\.bento\.html$/i, ''), folder: dir.split('/').filter(Boolean).pop() ?? dir, rel: [name], path, handle: diskHandle(path, name), parent: null, scanned: true, dir, openedAt: at })
+  }
+  // A found document with a FILE grant of its own is added, not "not added":
+  // the badge and the menu follow the grant, whichever way it was made. And
+  // a file grant the scan never saw (a folder it cannot read — macOS asks
+  // the browser for Documents access separately — or deeper than it walks)
+  // is listed FROM the grant: the handle reads its title and card, the path
+  // opens it.
+  const grants = await listFileGrants().catch(() => [])
+  const fileGranted = new Set(grants.map((g) => g.path).filter(Boolean))
+  for (const d of extra) if (fileGranted.has(d.path)) d.granted = true
+  for (const g of grants) {
+    if (g.path && have.has(g.path)) continue
+    const dir = g.path ? g.path.slice(0, g.path.lastIndexOf('/')) : ''
+    extra.push({
+      name: g.name, named: /\.bento\.html$/i.test(g.name), base: g.name.replace(/\.bento\.html$/i, '').replace(/\.html?$/i, ''),
+      folder: dir ? (dir.split('/').filter(Boolean).pop() ?? dir) : t('setFilesTitle'), rel: [g.name], path: g.path ?? null,
+      handle: g.handle, parent: null, scanned: true, granted: true, dir,
+    })
+    if (g.path) have.add(g.path)
+  }
   // Read mtimes once, here, rather than per render: sorting needs them and the
   // grid is re-rendered on every keystroke of the search box.
-  state.docs = await Promise.all(docs.map(async (d) => {
-    let modified = 0
-    try { modified = (await d.handle.getFile()).lastModified } catch { /* vanished mid-list */ }
-    return { ...d, modified }
-  }))
+  state.docs = await Promise.all([
+    ...docs.map(async (d) => {
+      let modified = 0
+      try { modified = (await d.handle.getFile()).lastModified } catch { /* vanished mid-list */ }
+      return { ...d, modified, openedAt: d.path ? opened[d.path] ?? 0 : 0 }
+    }),
+    ...extra.map(async (d) => ({ ...d, modified: d.path ? await diskModified(d.path) : 0, openedAt: d.openedAt ?? (d.path ? opened[d.path] ?? 0 : 0) })),
+  ])
   renderSidebar()
   renderGrid()
+  // A folder nobody has opened a document from yet: try to place it now,
+  // quietly, and redraw when that works — the cards go from "cannot open"
+  // to open, with nothing asked.
+  if (state.docs.some((d) => !d.path) && await placeFolders()) {
+    await load()
+    await renderNotice()
+  }
 }
 
 // ------------------------------------------------------------------ sidebar
@@ -279,9 +448,12 @@ function renderSidebar() {
 
   const host = $('folders')
   host.innerHTML = ''
+  const grantedFolders = new Set(state.docs.filter((d) => !d.scanned || d.granted).map((d) => d.folder))
   for (const [folder, n] of byFolder) {
     const b = document.createElement('button')
     b.className = 'navitem'
+    // Found on disk but not added: a hollow dot, and the reason on hover.
+    if (!grantedFolders.has(folder)) { b.classList.add('found'); b.title = t('folderFoundTip') }
     b.setAttribute('aria-current', String(state.folder === folder))
     b.innerHTML = `<span class="dot"></span> ${esc(folder)} <span class="n">${n}</span>`
     b.addEventListener('click', () => { state.folder = folder; show('docs') })
@@ -377,7 +549,7 @@ function surveyPanel(onDone) {
           // choice, in a real dialog, and an extension cannot pre-select a path
           // — `startIn` takes a well-known name or an existing handle, never an
           // arbitrary one. So the proposal is a signpost, not a shortcut.
-          const dir = await window.showDirectoryPicker({ mode: 'readwrite', startIn: 'documents' })
+          const dir = await window.showDirectoryPicker({ mode: 'readwrite', id: 'bento-grant', startIn: 'documents' })
           await dir.requestPermission({ mode: 'readwrite' })
           const dirs = await getGrants()
           for (const existing of dirs) if (await existing.isSameEntry(dir)) { add.disabled = false; return }
@@ -428,10 +600,17 @@ function firstRun() {
     steps.appendChild(s)
   }
 
-  const pick = document.createElement('button')
-  pick.className = 'btn primary'
-  pick.textContent = t('chooseFolder')
-  pick.onclick = () => $('addFolder').click()
+  const pick = document.createElement('span')
+  pick.className = 'btns'
+  const make = document.createElement('button')
+  make.className = 'btn primary'
+  make.textContent = t('bentoFolderBtn')
+  make.onclick = () => createBentoFolder()
+  const choose = document.createElement('button')
+  choose.className = 'btn'
+  choose.textContent = t('chooseFolder')
+  choose.onclick = () => $('addFolder').click()
+  pick.append(make, choose)
   step(1, !!state.grants, t('setupStep1'), t('setupStep1Note'), pick)
   // The survey belongs HERE most of all. On a fresh install the answer to "which
   // folder?" is knowable — the browser has the paths — and asking somebody to
@@ -503,7 +682,12 @@ function renderGrid() {
     return
   }
 
-  for (const d of docs) {
+  for (const d of docs) grid.appendChild(makeCard(d))
+}
+
+/** One document card; every grid builds its cards here. */
+function makeCard(d) {
+  {
     const card = document.createElement('button')
     card.className = 'card'
     // TWO different absences looked identical, and one of them is not a
@@ -512,8 +696,10 @@ function renderGrid() {
     // while a document with no path cannot be opened at all. Both used to be a
     // pale card with a grey glyph, so five perfectly good documents read as
     // broken. The states now say which they are, in words.
+    // Not DISABLED: a dead card explains nothing. A click on one says why it
+    // cannot open, tries to place the folder there and then, and points at
+    // the two routes that always work.
     if (!d.path) {
-      card.disabled = true
       card.classList.add('unplaced')
       card.title = t('cardUnplacedTip', d.folder)
     }
@@ -534,13 +720,85 @@ function renderGrid() {
       `<span>${esc(d.folder)} · ${esc(ago(d.modified))}</span>` +
       `</span><span class="more" title="More">⋯</span></span>`
     if (!d.named) badge(card, '.html', t('badgeRenamed'))
+    if (d.scanned && !d.granted) badge(card, t('badgeNotAdded'), t('badgeNotAddedTip'))
 
     card.addEventListener('click', (ev) => {
       if (ev.target.closest('.more')) { ev.stopPropagation(); openMenu(d, ev); return }
+      if (!d.path) { void explainUnplaced(d); return }
       openDoc(d)
     })
-    grid.appendChild(card)
     void decorate(card, d)
+    return card
+  }
+}
+
+/**
+ * Grant the folder a found document sits in, so it saves in place. The
+ * picker has to be worked by the person (Chrome insists), but it opens in
+ * Documents and the toast names the folder to pick; the grant is then
+ * checked against THIS document's path and placed at once — no probing.
+ */
+async function addFolderFor(d) {
+  toast(t('pickThisFolder', d.folder))
+  let dir
+  try {
+    dir = await window.showDirectoryPicker({ mode: 'readwrite', id: 'bento-grant', startIn: await startInFor(d.path) })
+  } catch (e) { if (e?.name !== 'AbortError') toast(e.message); return }
+  const prefix = await prefixFor(dir, d.path).catch(() => null)
+  if (!prefix) { toast(t('pickedWrongFolder', dir.name, d.folder)); return }
+  const dirs = await getGrants()
+  for (const existing of dirs) if (await existing.isSameEntry(dir)) { toast(t('folderAlreadyAdded', dir.name)); return }
+  await putGrants([...dirs, dir])
+  await learnPrefix(dir.name, prefix)
+  scanned = null
+  await load()
+  await renderNotice()
+  toast(t('surveyAdded', dir.name))
+}
+
+/** A still card from a document's first slide (library.js cardFrom): no scripts, no markup from the file. */
+function titleCard(card) {
+  const el = document.createElement('span')
+  el.className = 'tcard'
+  if (card.bg) el.style.background = card.bg
+  if (card.ink) el.style.color = card.ink
+  const bar = document.createElement('i')
+  if (card.accent) bar.style.background = card.accent
+  el.appendChild(bar)
+  const lines = [...card.lines].sort((a, b) => (b.size || 0) - (a.size || 0))
+  const head = card.lines.find((l) => l.role === 'title') ?? lines[0]
+  if (head) {
+    const h = document.createElement('b')
+    h.textContent = head.text
+    el.appendChild(h)
+  }
+  for (const l of card.lines.filter((x) => x !== head).slice(0, 2)) {
+    const p = document.createElement('span')
+    p.textContent = l.text
+    el.appendChild(p)
+  }
+  return el
+}
+
+/**
+ * A click on a document whose folder has no known place: try the disk once
+ * more, right now, and open it if that works; otherwise say what would.
+ */
+let explaining = false
+async function explainUnplaced(d) {
+  if (explaining) return
+  explaining = true
+  toast(t('placingFolder', d.folder))
+  try {
+    if (await placeFolders({ force: true })) {
+      await load()
+      await renderNotice()
+      const fresh = state.docs.find((x) => x.folder === d.folder && x.rel.join('/') === d.rel.join('/'))
+      if (fresh?.path) { openDoc(fresh); return }
+    }
+    toast(t('cardUnplacedTip', d.folder))
+  } finally {
+    explaining = false
   }
 }
 
@@ -573,10 +831,11 @@ async function decorate(card, d) {
       return
     }
     if (!meta.preview) {
-      // Not a failure, and it should not look like one. A shell has its
-      // page-one render written in on the FIRST SAVE, so a document that has
-      // never been saved — including every one `+ New document` creates — has
-      // nothing to show yet, and says so instead of sitting there blank.
+      // No page-one render (that is written in on the FIRST SAVE) — so a
+      // card is drawn from the document's own first slide: its background,
+      // its words, its theme. Only a document we cannot read at all is left
+      // to say so in words.
+      if (meta.card) { shot.replaceChildren(titleCard(meta.card)); return }
       if (d.path) shot.innerHTML = `<span class="label">${t('notSavedYet')}</span>`
       return
     }
@@ -626,12 +885,13 @@ function openMenu(d, ev) {
   }
 
   if (d.path) item(t('menuOpen'), () => openDoc(d))
-  item(t('menuDuplicate'), async () => {
+  if (d.scanned && !d.granted) item(t('menuAddFolder'), () => addFolderFor(d))
+  if (!d.scanned) item(t('menuDuplicate'), async () => {
     const made = await duplicate(d)
     toast(t('duplicatedAs', made.base))
     await load()
   })
-  item(t('menuRename'), async () => {
+  if (!d.scanned) item(t('menuRename'), async () => {
     const next = prompt(t('renamePrompt'), d.title ?? d.base)
     if (next == null) return
     const made = await rename(d, next)
@@ -703,6 +963,12 @@ async function renderNotice() {
   if (lapsed.length) {
     say('bad', t('noticeLapsed', lapsed.length))
   }
+  // macOS keeps Documents/Desktop/Downloads from the browser until the person
+  // allows it in System Settings; the browser cannot ask again itself.
+  if (state.blocked?.length) {
+    const names = state.blocked.map((p) => p.split('/').pop()).join(', ')
+    say('meh', `${t('noticeOsBlocked', esc(names))}<br><code>${t('noticeOsBlockedPath')}</code>`)
+  }
   // The one that unlocks opening. Said here in full, because the page has room
   // for the reason and the popup does not.
   const unplaced = [...new Set(state.docs.filter((d) => !d.path).map((d) => d.folder))]
@@ -710,6 +976,19 @@ async function renderNotice() {
     const el = document.createElement('div')
     el.className = 'notice'
     el.innerHTML = t('noticeUnplaced', esc(unplaced.join(', ')))
+    // What the disk probe did, in words, so "nothing happens" has a reason:
+    // how many places were tried, or that the disk refused to answer at all.
+    for (const name of unplaced) {
+      const p = placement.get(name)
+      if (!p) continue
+      const line = document.createElement('p')
+      line.className = 'sub'
+      line.style.margin = '6px 0 0'
+      line.textContent = p.probes === 0 || /^no file:\/\/\/(Users|home|C:)/.test(p.first) && p.probes <= 4
+        ? t('placeNoDisk', name)
+        : t('placeTried', name, p.probes)
+      el.appendChild(line)
+    }
     const go = document.createElement('button')
     go.className = 'btn primary'
     go.style.marginTop = '9px'
@@ -895,19 +1174,131 @@ addEventListener('keydown', (e) => {
   }
 })
 
+/**
+ * Keep a grant the person just made: stored, placed straight away (an empty
+ * folder is placed through a marker file — place.js), and — when asked —
+ * made the folder new documents go to.
+ */
+async function adoptGrant(dir, { asDefault = false } = {}) {
+  await dir.requestPermission({ mode: 'readwrite' })
+  const dirs = await getGrants()
+  let already = false
+  for (const existing of dirs) if (await existing.isSameEntry(dir)) already = true
+  if (!already) await putGrants([...dirs, dir])
+  if (asDefault) await put(GRANT, 'defaultFolder', dir.name)
+  scanned = null
+  await load()
+  await placeFolders({ force: true })
+  await load()
+  await renderNotice()
+}
+
 $('addFolder').addEventListener('click', async () => {
   try {
-    const dir = await window.showDirectoryPicker({ mode: 'readwrite' })
-    await dir.requestPermission({ mode: 'readwrite' })
-    const dirs = await getGrants()
-    for (const existing of dirs) if (await existing.isSameEntry(dir)) return
-    await putGrants([...dirs, dir])
-    await load()
-    await renderNotice()
+    // Chrome refuses the home folder itself, Desktop, Documents and Downloads
+    // as wholes with its own "contains system files" dialog, and there is no
+    // way around it from here — so the picker opens in Documents, where the
+    // folder it WILL accept is one level down, and the set-up note says so.
+    const dir = await window.showDirectoryPicker({ mode: 'readwrite', id: 'bento-grant' })
+    await adoptGrant(dir)
   } catch (e) {
     if (e?.name !== 'AbortError') toast(e.message)
   }
 })
+
+/**
+ * THE BENTO FOLDER. Most people save into Documents or Downloads and never
+ * make a folder — and those are the two Chrome will not grant. So the
+ * extension offers to make one: the picker opens in Documents with the
+ * instruction to create "Bento" and choose it (the dialog's own New Folder
+ * button; the extension cannot write into Documents itself), the grant is
+ * kept as the DEFAULT for new documents, and it is placed at once. A
+ * document made from bento/home then lives somewhere that never prompts.
+ */
+async function createBentoFolder() {
+  toast(t('bentoFolderHow'))
+  let dir
+  try {
+    dir = await window.showDirectoryPicker({ mode: 'readwrite', id: 'bento-grant', startIn: 'documents' })
+  } catch (e) { if (e?.name !== 'AbortError') toast(e.message); return null }
+  await adoptGrant(dir, { asDefault: true })
+  toast(t('bentoFolderMade', dir.name))
+  return dir
+}
+
+/**
+ * DROP TO GRANT. A file or folder dragged from the Finder onto the library
+ * yields a real handle with no dialog at all (`getAsFileSystemHandle`) —
+ * the cheapest grant there is. A folder becomes a folder grant; a document
+ * becomes a FILE grant, kept in the extension's own storage, and matched to
+ * its path when the scan knows a same-named file with the same bytes. Chrome's
+ * blocklist still applies to what is dropped: Documents itself cannot be
+ * dropped, a folder inside it can.
+ */
+async function dropToGrant(ev) {
+  const items = [...(ev.dataTransfer?.items ?? [])].filter((i) => i.kind === 'file')
+  if (!items.length) return
+  ev.preventDefault()
+  let folders = 0
+  let files = 0
+  // Every way a drop can come to nothing is said, in the console and the
+  // toast — "nothing happened" is the one outcome that must not be silent.
+  const say = (why) => { console.info('[bento/home] drop:', why); toast(why) }
+  // handles must be taken from the items SYNCHRONOUSLY in the drop event —
+  // after an await the DataTransfer is empty (measured in Chrome)
+  const pending = items.map((item) => ({ name: item.getAsFile?.()?.name ?? '', handle: item.getAsFileSystemHandle?.() ?? null }))
+  for (const { name, handle: p } of pending) {
+    let handle = null
+    try { handle = await p } catch (e) { say(`${name}: ${e?.message || e}`); continue }
+    if (!handle) { say(t('dropNoHandle', name)); continue }
+    try {
+      if (handle.kind === 'directory') {
+        await adoptGrant(handle)
+        folders++
+      } else if (/\.bento\.html$/i.test(handle.name)) {
+        if (await handle.requestPermission({ mode: 'readwrite' }) !== 'granted') { say(t('fgDenied')); continue }
+        // its path, when a scanned file of that name is the same bytes
+        // bound to a path only when exactly ONE same-named file on disk has
+        // these bytes; a twin leaves it unbound (and unusable until the
+        // twins differ), never guessed
+        const matches = []
+        for (const d of await scannedDocs()) {
+          if (d.name === handle.name && await handleIsPath(handle, d.path)) matches.push(d.path)
+        }
+        const path = matches.length === 1 ? matches[0] : null
+        if (matches.length > 1) say(t('dropTwins', handle.name, matches.length))
+        await addFileGrant(handle, path)
+        console.info('[bento/home] drop: file grant', handle.name, path ?? '(path unknown)')
+        files++
+      } else {
+        say(t('dropNotBento', handle.name))
+      }
+    } catch (e) { say(`${handle.name}: ${e?.message || e}`) }
+  }
+  if (folders || files) {
+    toast(t('droppedGranted', folders, files))
+    await load()
+    await renderNotice()
+  }
+}
+{
+  // The WHOLE page, not just the grid: a drop that misses the grid would
+  // otherwise be the browser's default — navigating this tab to the file —
+  // which looks like the grant was taken when nothing happened.
+  const scroll = document.querySelector('.scroll')
+  const hasFiles = (ev) => [...(ev.dataTransfer?.items ?? [])].some((i) => i.kind === 'file')
+  document.addEventListener('dragover', (ev) => {
+    if (hasFiles(ev)) { ev.preventDefault(); ev.dataTransfer.dropEffect = 'link'; scroll.classList.add('dropping') }
+  })
+  document.addEventListener('dragleave', (ev) => { if (!ev.relatedTarget) scroll.classList.remove('dropping') })
+  document.addEventListener('drop', (ev) => { scroll.classList.remove('dropping'); if (hasFiles(ev)) { ev.preventDefault(); void dropToGrant(ev) } })
+}
+
+/** The grant new documents go to: the one chosen as default, else the first. */
+async function defaultGrant(grants) {
+  const name = await get(GRANT, 'defaultFolder')
+  return grants.find((g) => g.name === name) ?? grants[0]
+}
 
 /**
  * Which Bento to make.
@@ -924,8 +1315,8 @@ $('new').addEventListener('click', async (ev) => {
   // A new document appearing in a folder you are not looking at is a small
   // mystery, and mysteries are what a file manager exists to prevent.
   const target = state.folder
-    ? grants.find((g) => g.name === state.folder) ?? grants[0]
-    : grants[0]
+    ? grants.find((g) => g.name === state.folder) ?? await defaultGrant(grants)
+    : await defaultGrant(grants)
 
   closeMenu()
   const m = document.createElement('div')
@@ -1081,6 +1472,7 @@ async function renderSettings() {
 
   // --- folders
   const folders = section(t('navFolders'), t('setFoldersSub'))
+  const defaultName = await get(GRANT, 'defaultFolder')
   if (!dirs.length) {
     const p = document.createElement('p')
     p.className = 'dim'
@@ -1092,7 +1484,7 @@ async function renderSettings() {
     const row = document.createElement('div')
     row.className = 'row'
     row.innerHTML = `<span class="dot ${granted ? 'ok' : 'bad'}"></span><b>${esc(dir.name)}</b>`
-      + `<span class="note">${granted ? t('savesInPlace') : t('needsReconnecting')}</span>`
+      + `<span class="note">${granted ? t('savesInPlace') : t('needsReconnecting')}${dir.name === defaultName ? ` · ${t('defaultFolder')}` : ''}</span>`
     if (!granted) {
       const renew = document.createElement('button')
       renew.className = 'btn'
@@ -1121,6 +1513,86 @@ async function renderSettings() {
   add.textContent = t('addFolder')
   add.onclick = () => $('addFolder').click()
   folders.appendChild(add)
+  const make = document.createElement('button')
+  make.className = 'btn'
+  make.style.marginInlineStart = '8px'
+  make.textContent = t('bentoFolderBtn')
+  make.title = t('bentoFolderTip')
+  make.onclick = () => createBentoFolder()
+  folders.appendChild(make)
+
+  // --- the Downloads door, when this Chrome shut it by prompting
+  if (await downloadsUnusable().catch(() => false)) {
+    const dl = section(t('setDownloadsTitle'), t('setDownloadsSub'))
+    const row = document.createElement('div')
+    row.className = 'row'
+    row.innerHTML = `<span class="dot bad"></span><b>${esc(t('setDownloadsOff'))}</b>`
+      + `<span class="note"><a href="#" id="dlSettings">chrome://settings/downloads</a></span>`
+    row.querySelector('#dlSettings').onclick = (ev) => { ev.preventDefault(); chrome.tabs.create({ url: 'chrome://settings/downloads' }) }
+    const again = document.createElement('button')
+    again.className = 'btn'
+    again.textContent = t('setDownloadsRetry')
+    again.onclick = () => act(async () => { await setDownloadsUnusable(false) })
+    row.appendChild(again)
+    dl.appendChild(row)
+  }
+
+  // --- files saving in place on their own (filegrant.js)
+  const fileGrants = await listFileGrants().catch(() => [])
+  {
+    const filesSec = section(t('setFilesTitle'), t('setFilesSub'))
+    // Many at once: one OS dialog, every deck in Documents selected, done —
+    // the cheapest form of "once per file" Chrome allows.
+    const addFiles = document.createElement('button')
+    addFiles.className = 'btn'
+    addFiles.textContent = t('addFiles')
+    addFiles.onclick = async () => {
+      let handles = []
+      try {
+        handles = await window.showOpenFilePicker({ multiple: true, id: 'bento-grant', types: [{ description: 'Bento', accept: { 'text/html': ['.html'] } }] })
+      } catch (e) { if (e?.name !== 'AbortError') toast(e.message); return }
+      let n = 0
+      for (const h of handles) {
+        if (!/\.bento\.html$/i.test(h.name)) { toast(t('dropNotBento', h.name)); continue }
+        if (await h.requestPermission({ mode: 'readwrite' }) !== 'granted') continue
+        const matches = []
+        for (const d of await scannedDocs()) if (d.name === h.name && await handleIsPath(h, d.path)) matches.push(d.path)
+        if (matches.length > 1) toast(t('dropTwins', h.name, matches.length))
+        await addFileGrant(h, matches.length === 1 ? matches[0] : null)
+        n++
+      }
+      if (n) { toast(t('droppedGranted', 0, n)); await load(); await renderSettings() }
+    }
+    filesSec.appendChild(addFiles)
+    if (!fileGrants.length) {
+      const p = document.createElement('p')
+      p.className = 'dim'
+      p.textContent = t('noneYet')
+      filesSec.appendChild(p)
+    }
+    for (const g of fileGrants) {
+      let perm = 'denied'
+      try { perm = await g.handle.queryPermission({ mode: 'readwrite' }) } catch { /* gone */ }
+      const granted = perm === 'granted'
+      const row = document.createElement('div')
+      row.className = 'row'
+      row.innerHTML = `<span class="dot ${granted ? 'ok' : 'bad'}"></span><b>${esc(g.name)}</b>`
+        + `<span class="note path">${esc(g.path ?? '')}${g.path ? ' · ' : ''}${granted ? t('savesInPlace') : t('needsReconnecting')}</span>`
+      if (!granted) {
+        const renew = document.createElement('button')
+        renew.className = 'btn'
+        renew.textContent = t('reconnect')
+        renew.onclick = () => act(async () => { await g.handle.requestPermission({ mode: 'readwrite' }) })
+        row.appendChild(renew)
+      }
+      const drop = document.createElement('button')
+      drop.className = 'btn'
+      drop.textContent = t('remove')
+      drop.onclick = () => act(async () => { await dropFileGrant(g.key) })
+      row.appendChild(drop)
+      filesSec.appendChild(row)
+    }
+  }
 
   // --- the language, which Chrome will not let you change on macOS
   //
@@ -1190,6 +1662,11 @@ async function renderSettings() {
   tsel.addEventListener('change', () => { globalThis.bentoTheme?.set(tsel.value) })
   trow.appendChild(tsel)
   theme.appendChild(trow)
+
+  // --- the assistant: where a chat about a deck goes, and which decks may ask
+  const asst = section(t('setAsstTitle'), t('setAsstSub'))
+  asst.id = 'assistant'
+  await assistantSettings(asst)
 
   // --- the permission nothing can request
   const access = section(t('setAccessTitle'), t('setAccessSub'))
@@ -1319,6 +1796,10 @@ document.addEventListener('visibilitychange', () => {
 // Before ANY painting: a saved language choice has to be in hand, or the page
 // renders in the browser's language and visibly re-renders a moment later.
 await initI18n()
+// The extension's storage holds documents' crash recovery (store.js): ask
+// the browser not to evict it under disk pressure. Best effort — the answer
+// is the browser's, and nothing depends on it.
+try { void navigator.storage?.persist?.() } catch { /* not offered */ }
 localize()
 
 // Read BEFORE the first grid render, so someone who chose list mode never
@@ -1335,9 +1816,30 @@ paintLayout()
 // of documents ignores the question. Applied twice on purpose — once before the
 // documents load so the right screen paints immediately, once after, because
 // `load()` finishes by showing the grid.
+/**
+ * `#assistant` is the Settings view scrolled to the Assistant card with the
+ * Model control focused — what the document's "Settings…" link asks for
+ * (assistant.settings.open { section:'assistant' }). The card renders
+ * asynchronously (renderSettings awaits storage), so the scroll waits for
+ * the element rather than for a frame.
+ */
+const revealSection = async (id) => {
+  for (let i = 0; i < 40; i++) {
+    const el = document.getElementById(id)
+    if (el) {
+      el.scrollIntoView({ block: 'start', behavior: 'smooth' })
+      el.querySelector('select, input')?.focus({ preventScroll: true })
+      return true
+    }
+    await new Promise((r) => setTimeout(r, 50))
+  }
+  return false
+}
+
 const routeHash = () => {
-  const view = { '#welcome': 'help', '#help': 'help', '#settings': 'settings' }[location.hash]
+  const view = { '#welcome': 'help', '#help': 'help', '#settings': 'settings', '#assistant': 'settings' }[location.hash]
   if (view) show(view)
+  if (location.hash === '#assistant') void revealSection('assistant')
   return !!view
 }
 
@@ -1350,3 +1852,442 @@ routeHash()
 // A hash change while the page is already open (Chrome reuses an existing
 // options tab rather than opening a second one) must still move the view.
 addEventListener('hashchange', routeHash)
+
+// ---------------------------------------------------------------- assistant
+//
+// The endpoint, the model and the key — the three things a document must
+// never hold (assistant.js). They live in `chrome.storage.local`, which no
+// page can read, and this is the only place they are typed.
+//
+// Provider order is the maintainer's: the Chrome built-in model first, because
+// it is zero setup, local and offline, and the default whenever this Chrome
+// has it; then Gemini (a free key), Anthropic, and anything OpenAI-shaped —
+// which is also every local server. The base URL is editable for all of
+// them: proxies and gateways exist.
+
+// A function DECLARATION, not a const: this section sits after the module's
+// top-level `await load()`, and the Settings view can render before
+// evaluation reaches here — a const would be in its temporal dead zone
+// ("Cannot access 'providerLabel' before initialization", measured).
+function providerLabel(p) {
+  return p === 'builtin' ? t('asstProvBuiltin')
+    : p === 'gemini' ? t('asstProvGemini')
+    : p === 'anthropic' ? t('asstProvAnthropic')
+    : t('asstProvOpenai')
+}
+
+async function assistantSettings(section) {
+  const hasBuiltin = typeof globalThis.LanguageModel !== 'undefined'
+  const stored = (await chrome.storage.local.get(CONFIG_KEY))?.[CONFIG_KEY]
+  const cfg = activeConfig(stored, hasBuiltin)
+  // What was typed for each provider survives switching between them — in
+  // the store, so the page's picker (assistant.select) and this form agree.
+  const perProvider = {}
+  for (const p of PROVIDERS) perProvider[p] = providerConfig(stored, p, hasBuiltin)
+
+  const form = document.createElement('div')
+  form.className = 'form'
+  section.appendChild(form)
+
+  const field = (label, control, hint) => {
+    const row = document.createElement('label')
+    row.className = 'field'
+    const l = document.createElement('span')
+    l.textContent = label
+    row.append(l, control)
+    if (hint) {
+      const h = document.createElement('small')
+      h.textContent = hint
+      row.appendChild(h)
+    }
+    form.appendChild(row)
+    return row
+  }
+
+  const provider = document.createElement('select')
+  for (const p of PROVIDERS) {
+    if (p === 'builtin' && !hasBuiltin) continue
+    const o = document.createElement('option')
+    o.value = p
+    o.textContent = providerLabel(p)
+    provider.appendChild(o)
+  }
+  provider.value = cfg.provider
+  field(t('asstProvider'), provider)
+
+  const baseUrl = document.createElement('input')
+  baseUrl.type = 'text'
+  baseUrl.spellcheck = false
+  baseUrl.autocomplete = 'off'
+  const baseRow = field(t('asstBaseUrl'), baseUrl)
+
+  // The model: a PICKER over the curated listing (assistant.js pickerRows —
+  // the same rows the page's own picker gets), with an "Other…" row that
+  // reveals a free-text field for an id the listing does not carry. It was a
+  // <datalist>, which is autocomplete, not a picker: with an id typed it
+  // suggested only the ids starting with it, and the other ten were invisible
+  // until the field was cleared. Before the first listing the picker holds
+  // the default and Other…; the default is chosen by RULE from the list
+  // (providers.js pickDefault) rather than by a name that is stale in a
+  // season.
+  const OTHER = '\u0000other'
+  const model = document.createElement('select')
+  const modelRow = field(t('asstModel'), model)
+  const other = document.createElement('input')
+  other.type = 'text'
+  other.spellcheck = false
+  other.autocomplete = 'off'
+  other.placeholder = t('asstOtherModel')
+  other.hidden = true
+  modelRow.appendChild(other)
+  const modelNote = modelRow.appendChild(document.createElement('small'))
+  /** The id the two controls currently mean. */
+  const modelId = () => (model.value === OTHER ? other.value.trim() : model.value)
+  /** Fill the picker for a configuration and select its model (as Other… when unlisted). */
+  const fillPicker = (c, listing) => {
+    const rows = pickerRows(c, listing)
+    model.replaceChildren(
+      ...rows.map((r) => Object.assign(document.createElement('option'), { value: r.id, textContent: r.label })),
+      Object.assign(document.createElement('option'), { value: OTHER, textContent: t('asstOtherModelRow') }),
+    )
+    if (c.model && rows.some((r) => r.id === c.model)) { model.value = c.model; other.hidden = true; other.value = '' }
+    else { model.value = OTHER; other.hidden = false; other.value = c.model || '' }
+  }
+
+  // The input window in tokens: what the page sizes every turn to. Shown
+  // from the listing or the family table; typed here to override both,
+  // which is the answer for a self-hosted server only its owner knows.
+  const ctx = document.createElement('input')
+  ctx.type = 'text'
+  ctx.inputMode = 'numeric'
+  ctx.autocomplete = 'off'
+  const ctxRow = field(t('asstContext'), ctx, t('asstContextHint'))
+
+  // The listing is long and most of it is not for chat (TTS, embeddings,
+  // video…); both this form and the page's picker show the curated cut
+  // (providers.js curateModels) unless this is on for the provider.
+  const showAllRow = document.createElement('label')
+  showAllRow.className = 'check'
+  const showAll = document.createElement('input')
+  showAll.type = 'checkbox'
+  showAllRow.append(showAll, document.createTextNode(` ${t('asstShowAll')}`))
+  form.appendChild(showAllRow)
+
+  // THE WEB. Three switches, each honest about what it is: the provider's
+  // own search (a toggle, on by default for hosted routes — the deck already
+  // goes to that provider, the query is the only new thing that leaves, and
+  // the note says whether this route HAS one); reading pages, which is a
+  // browser permission and needs a click here (a service worker cannot ask);
+  // and a search endpoint for routes with no search of their own.
+  const searchRow = document.createElement('label')
+  searchRow.className = 'check'
+  const search = document.createElement('input')
+  search.type = 'checkbox'
+  const searchNote = document.createElement('small')
+  searchRow.append(search, document.createTextNode(` ${t('asstSearch')}`), searchNote)
+  form.appendChild(searchRow)
+
+  const readRow = document.createElement('div')
+  readRow.className = 'field'
+  const readLabel = document.createElement('span')
+  readLabel.textContent = t('asstRead')
+  const readBtn = document.createElement('button')
+  readBtn.className = 'btn'
+  const readState = document.createElement('small')
+  readRow.append(readLabel, readBtn, readState)
+  form.appendChild(readRow)
+  const WEB_ORIGINS = ['https://*/*', 'http://*/*']
+  const showRead = async () => {
+    let has = false
+    try { has = await chrome.permissions.contains({ origins: WEB_ORIGINS }) } catch { has = false }
+    readBtn.textContent = has ? t('asstReadOff') : t('asstReadOn')
+    readState.textContent = has ? t('asstReadOnNote') : t('asstReadOffNote')
+    readBtn.dataset.has = String(has)
+  }
+  readBtn.onclick = async () => {
+    try {
+      if (readBtn.dataset.has === 'true') await chrome.permissions.remove({ origins: WEB_ORIGINS })
+      else await chrome.permissions.request({ origins: WEB_ORIGINS })
+    } catch (e) { toast(e.message) }
+    await showRead()
+  }
+
+  const endpoint = document.createElement('input')
+  endpoint.type = 'text'
+  endpoint.spellcheck = false
+  endpoint.autocomplete = 'off'
+  endpoint.placeholder = 'https://searx.example/  ·  https://api.search.brave.com/'
+  const endpointRow = field(t('asstSearchEndpoint'), endpoint, t('asstSearchEndpointHint'))
+  const searchKey = document.createElement('input')
+  searchKey.type = 'password'
+  searchKey.autocomplete = 'off'
+  const searchKeyRow = field(t('asstSearchKey'), searchKey)
+
+  const key = document.createElement('input')
+  key.type = 'password'
+  key.autocomplete = 'off'
+  const keyRow = field(t('asstKey'), key)
+  const keyHint = keyRow.appendChild(document.createElement('small'))
+
+  // What leaves this computer, in the drawer's own words (moved here from
+  // the page when the assistant's weight did): the outline and the focus go
+  // to the host, comments never do.
+  const notice = document.createElement('p')
+  notice.className = 'sub notice'
+  form.appendChild(notice)
+  const showNotice = (c) => {
+    const where = c.provider === 'builtin' ? t('asstOnDeviceModel') : (hostOf(c) || c.provider)
+    notice.textContent = t('asstSendsNotice', t('asstFocusGeneric'), where)
+  }
+
+  const actions = document.createElement('div')
+  actions.className = 'actions'
+  const save = document.createElement('button')
+  save.className = 'btn primary'
+  save.textContent = t('asstSave')
+  const probe = document.createElement('button')
+  probe.className = 'btn'
+  probe.textContent = t('asstCheck')
+  const status = document.createElement('span')
+  status.className = 'note'
+  actions.append(save, probe, status)
+  form.appendChild(actions)
+
+  const current = () => normalizeConfig({
+    provider: provider.value, baseUrl: baseUrl.value, model: modelId(), key: key.value,
+    contextTokens: ctx.value.replace(/[^0-9]/g, ''),
+    showAll: showAll.checked, pinned: perProvider[provider.value]?.pinned,
+    search: search.checked, searchEndpoint: endpoint.value, searchKey: searchKey.value,
+  }, hasBuiltin)
+
+  const cachedModels = async (c) => (await chrome.storage.local.get(MODELS_KEY))?.[MODELS_KEY]?.[modelsKey(c)]?.models
+
+  /** The suggestions and the window note, from what is cached for this provider+endpoint. */
+  const showModels = async (c = current()) => {
+    const models = (await cachedModels(c)) || []
+    fillPicker(c, models)
+    const tokens = contextTokensOf(c, models)
+    ctx.placeholder = tokens ? String(tokens) : ''
+    modelNote.textContent = c.model && tokens ? t('asstContextKnown', tokens.toLocaleString()) : ''
+  }
+
+  /**
+   * Fetch the provider's list, cache it, and — when the model is still the
+   * hard-coded starting value or not in the list — move to the rule's pick.
+   * A model the person typed themselves is left alone.
+   */
+  const refreshModels = async (c) => {
+    if (c.provider === 'builtin') return
+    const models = await listModels(c, { fetch: fetch.bind(globalThis), t })
+    const all = (await chrome.storage.local.get(MODELS_KEY))?.[MODELS_KEY] || {}
+    all[modelsKey(c)] = { at: Date.now(), models }
+    await chrome.storage.local.set({ [MODELS_KEY]: all })
+    const pick = pickDefault(c.provider, models)
+    const listed = models.some((m) => m.id === c.model)
+    if (pick && (c.model === PROVIDER_DEFAULTS[c.provider]?.model || !listed) && pick !== c.model) {
+      perProvider[c.provider] = { ...c, model: pick }
+    }
+    await showModels(perProvider[c.provider] ?? current())
+  }
+
+  // The built-in model: what Chrome says about it, and the one action that
+  // moves it along. `availability()` reports 'downloadable' until something
+  // calls `LanguageModel.create()` — nothing else starts the download, and a
+  // click on an extension page is the gesture it wants. Progress comes from
+  // the monitor; 'unavailable' is usually disk (~22 GB free) or a metered
+  // network, which the hint says.
+  const download = document.createElement('button')
+  download.className = 'btn'
+  download.textContent = t('asstBuiltinDownloadBtn')
+  download.hidden = true
+  actions.insertBefore(download, status)
+  const requirements = document.createElement('small')
+  requirements.className = 'dim'
+  requirements.textContent = t('asstBuiltinRequirements')
+  requirements.hidden = true
+  form.appendChild(requirements)
+
+  const showBuiltinState = async () => {
+    const a = await builtinAvailability(globalThis.LanguageModel)
+    download.hidden = !(a === 'downloadable' || a === 'downloading')
+    requirements.hidden = a === 'available'
+    status.textContent = a === 'available' ? t('asstBuiltinReady')
+      : a === 'downloadable' ? t('asstBuiltinDownload')
+      : a === 'downloading' ? t('asstBuiltinDownloading')
+      : t('asstBuiltinUnsupported')
+    modelNote.textContent = ''
+    if (a !== 'available') { ctx.placeholder = ''; return }
+    // The quota lives on a session; read once and kept (background.js does
+    // the same for describe).
+    let kept = (await chrome.storage.local.get(BUILTIN_KEY))?.[BUILTIN_KEY]?.tokens
+    if (!kept) {
+      kept = await builtinContext(globalThis.LanguageModel)
+      if (kept) await chrome.storage.local.set({ [BUILTIN_KEY]: { at: Date.now(), tokens: kept } })
+    }
+    ctx.placeholder = kept ? String(kept) : ''
+    // The model row is hidden for the built-in provider, so its window goes
+    // on the status line instead.
+    if (kept) status.textContent += ` ${t('asstContextKnown', kept.toLocaleString())}`
+  }
+  download.onclick = async () => {
+    download.disabled = true
+    status.textContent = t('asstBuiltinProgress', 0)
+    try {
+      const session = await globalThis.LanguageModel.create({
+        monitor(m) {
+          m.addEventListener('downloadprogress', (e) => {
+            status.textContent = t('asstBuiltinProgress', Math.round((e.loaded ?? 0) * 100))
+          })
+        },
+      })
+      session.destroy?.()
+    } catch (e) {
+      status.textContent = e?.message || String(e)
+    } finally {
+      download.disabled = false
+      await showBuiltinState()
+    }
+  }
+
+  const fill = () => {
+    const p = provider.value
+    const c = perProvider[p]
+    const http = p !== 'builtin'
+    baseRow.hidden = modelRow.hidden = keyRow.hidden = !http
+    download.hidden = requirements.hidden = true
+    baseUrl.value = http ? c.baseUrl : ''
+    baseUrl.placeholder = PROVIDER_DEFAULTS[p]?.baseUrl ?? ''
+    if (http) fillPicker(c, [])
+    key.value = http ? c.key : ''
+    keyHint.textContent = p === 'openai' ? t('asstKeyOptional') : ''
+    ctx.value = c.contextTokens ? String(c.contextTokens) : ''
+    ctxRow.hidden = false
+    showAll.checked = !!c.showAll
+    showAllRow.hidden = !http
+    // the web rows: no tools for the built-in model at all
+    searchRow.hidden = readRow.hidden = endpointRow.hidden = searchKeyRow.hidden = !http
+    if (http) {
+      search.checked = !!c.search
+      const native = nativeSearch(c)
+      searchNote.textContent = native ? t('asstSearchNative', hostOf(c)) : t('asstSearchNone')
+      endpoint.value = c.searchEndpoint ?? ''
+      searchKey.value = c.searchKey ?? ''
+      void showRead()
+    }
+    showNotice(c)
+    status.textContent = ''
+    if (http) void showModels(c)
+    else void showBuiltinState()
+  }
+  provider.addEventListener('change', fill)
+  for (const input of [baseUrl, other, key, ctx, endpoint, searchKey]) {
+    input.addEventListener('input', () => { perProvider[provider.value] = current() })
+  }
+  search.addEventListener('change', () => { perProvider[provider.value] = current() })
+  model.addEventListener('change', () => { const c = current(); const native = nativeSearch(c); searchNote.textContent = native ? t('asstSearchNative', hostOf(c)) : t('asstSearchNone') })
+  baseUrl.addEventListener('change', () => showNotice(current()))
+  showAll.addEventListener('change', () => { perProvider[provider.value] = current(); void showModels() })
+  model.addEventListener('change', () => {
+    other.hidden = model.value !== OTHER
+    if (model.value === OTHER) { other.focus(); return }
+    perProvider[provider.value] = current()
+    void showModels()
+  })
+  other.addEventListener('change', () => { void showModels() })
+  fill()
+
+  /**
+   * Site access for the endpoint's origin, asked on Save — a click, which is
+   * the gesture `permissions.request` needs. With it the request is exempt
+   * from CORS; without it the request is still made, and works wherever the
+   * server allows browser extensions (the hosted vendors do; Ollama does by
+   * default; LM Studio has a switch). Declining is therefore not an error.
+   */
+  const askSiteAccess = async (c) => {
+    const origin = permissionOriginOf(c)
+    if (!origin || !chrome.permissions?.request) return true
+    try {
+      return await chrome.permissions.request({ origins: [`${origin}/*`] })
+    } catch { return false }
+  }
+
+  // Neither goes through `act`: that re-renders the whole view, and the
+  // status line these write is the thing the person is waiting to read.
+  save.onclick = async () => {
+    const c = current()
+    if (c.provider !== 'builtin' && !MODEL_RE.test(c.model)) { status.textContent = t('asstBadModel'); other.focus(); return }
+    try {
+      // Every provider's fields are kept; this one becomes active.
+      const raw = (await chrome.storage.local.get(CONFIG_KEY))?.[CONFIG_KEY]
+      let next = withProvider(raw, c)
+      for (const p of PROVIDERS) if (p !== c.provider && perProvider[p]) next = withProvider(next, perProvider[p], false)
+      await chrome.storage.local.set({ [CONFIG_KEY]: next })
+    } catch (e) { toast(e.message); return }
+    const granted = await askSiteAccess(c)
+    toast(t('asstSaved'))
+    status.textContent = granted ? '' : t('asstAccessDeclined')
+    // The list is worth having for the window even if Check is never pressed.
+    try { await refreshModels(c) } catch { /* Check reports it, with the reason */ }
+  }
+
+  probe.onclick = async () => {
+    const c = current()
+    probe.disabled = true
+    status.textContent = t('asstChecking')
+    try {
+      // The listing first: it is the cheaper call, it feeds the picker and the
+      // window, and a bad key fails here with the same words it would below.
+      if (c.provider !== 'builtin') await refreshModels(c)
+      const r = await checkAssistant(current(), { fetch: fetch.bind(globalThis), LanguageModel: globalThis.LanguageModel, t })
+      status.textContent = r.ok
+        ? (c.provider === 'builtin' ? t('asstBuiltinReady') : t('asstReachable', hostOf(c)))
+        : r.reason
+    } catch (e) {
+      status.textContent = e.message
+    } finally {
+      probe.disabled = false
+    }
+  }
+
+  // --- the documents that have been allowed to ask
+  const allowed = (await chrome.storage.local.get(ALLOWED_KEY))?.[ALLOWED_KEY] || {}
+  const list = document.createElement('div')
+  list.className = 'allowed'
+  const h = document.createElement('h3')
+  h.textContent = t('asstAllowedTitle')
+  const sub = document.createElement('p')
+  sub.className = 'sub'
+  sub.textContent = t('asstAllowedSub')
+  list.append(h, sub)
+  const keys = Object.keys(allowed).sort()
+  if (!keys.length) {
+    const p = document.createElement('p')
+    p.className = 'dim'
+    p.textContent = t('noneYet')
+    list.appendChild(p)
+  }
+  for (const docKey of keys) {
+    let path = docKey
+    try { path = decodeURIComponent(new URL(docKey).pathname) } catch { /* shown as stored */ }
+    const row = document.createElement('div')
+    row.className = 'row'
+    row.innerHTML = `<b>${esc(path.split('/').filter(Boolean).pop() || path)}</b>`
+      + `<span class="note path">${esc(path)}</span>`
+    const drop = document.createElement('button')
+    drop.className = 'btn'
+    drop.textContent = t('remove')
+    drop.onclick = () => act(async () => {
+      const now = (await chrome.storage.local.get(ALLOWED_KEY))?.[ALLOWED_KEY] || {}
+      delete now[docKey]
+      await chrome.storage.local.set({ [ALLOWED_KEY]: now })
+    })
+    row.appendChild(drop)
+    list.appendChild(row)
+  }
+  section.appendChild(list)
+}
+
+/** The host a configuration talks to, for the status line — never the URL. */
+function hostOf(c) {
+  try { return new URL(c.baseUrl).host } catch { return c.provider }
+}

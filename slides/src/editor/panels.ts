@@ -139,6 +139,9 @@ const fillStyles = (): Array<[string, string]> =>
 
 export class PropsPanel {
   private burst = false
+  /** Indent (+1) / outdent (−1) bullets — set by the editor to the canvas,
+   *  which knows whether a text box is open and where its caret is. */
+  onListIndent: ((dir: 1 | -1) => void) | null = null
 
   constructor(
     private host: HTMLElement,
@@ -187,6 +190,16 @@ export class PropsPanel {
     mutate()
     this.store.touch()
     if (final) this.burst = false
+  }
+
+  /* The canonical API to edit `slide` attributes. */
+  private editSlideAttrs(slideId: string, mutate: (slide: Slide) => void, final: boolean) {
+    const slide = this.store.slideById(slideId)
+    if (slide) {
+      this.edit(() => {
+        mutate(slide)
+      }, final)
+    }
   }
 
   private rebuild(force = false) {
@@ -285,6 +298,9 @@ export class PropsPanel {
 
   private buildSlidePanel() {
     const slide = this.store.slide
+    // Track the `slide.id` so when updating you can find the slide to update using its `id`. 
+    // This way if the doc is actively replaced and the references are stale the update still succeeds.
+    const slideId = slide.id
     this.section(t('Slide'))
     // deck-wide page size: presets + custom. Elements keep their absolute
     // positions — a size change reframes the canvas, it never rescales art.
@@ -316,29 +332,29 @@ export class PropsPanel {
       this.edit(() => { this.store.doc.size.height = Math.max(320, Math.min(4000, Math.round(v))) }, fin)))
     showCustomSize(presetKey === 'Custom…')
     this.row('Background', this.color(slide.background, (v, fin) =>
-      this.edit(() => { this.store.slide.background = v }, fin),
-      { id: null, path: 'background' }))
+      this.editSlideAttrs(slideId, (slide: Slide) => { slide.background = v }, fin),
+      { id: null, path: 'background', slide }))
     this.row('Transition', this.select(
       ['none', 'fade', 'slide', 'zoom', 'morph'],
       slide.transition,
-      (v) => this.edit(() => { this.store.slide.transition = v as TransitionKind }, true),
+      (v) => this.editSlideAttrs(slideId, (slide: Slide) => { slide.transition = v as TransitionKind }, true),
     ))
     // Hidden slides stay in the deck and stay editable; they drop out of the
     // walk, the PDF and the file thumbnail. Offered only on ordinary slides —
     // a state is already unreachable linearly, so hiding one means nothing.
     if (!slide.stateOf) {
       this.row('Hide slide', this.toggle(!!slide.hidden, (v) =>
-        this.edit(() => {
-          if (v) this.store.slide.hidden = true
-          else delete this.store.slide.hidden
+        this.editSlideAttrs(slideId, (slide: Slide) => {
+          if (v) slide.hidden = true
+          else delete slide.hidden
         }, true)))
       // The third answer to "does it take a number": stays in the walk, counts
       // for nothing, and {{page}} on it continues the slide before. Builds
       // (one element revealed per morph step) and interstitials.
       this.row('Unnumbered', this.toggle(!!slide.unnumbered, (v) =>
-        this.edit(() => {
-          if (v) this.store.slide.unnumbered = true
-          else delete this.store.slide.unnumbered
+        this.editSlideAttrs(slideId, (slide: Slide) => {
+          if (v) slide.unnumbered = true
+          else delete slide.unnumbered
         }, true)))
       if (slide.unnumbered) {
         const hint = document.createElement('p')
@@ -400,7 +416,7 @@ export class PropsPanel {
     name.placeholder = t('unnamed')
     name.value = slide.name ?? ''
     name.addEventListener('change', () =>
-      this.edit(() => { this.store.slide.name = name.value || undefined }, true))
+       this.editSlideAttrs(slideId, (slide: Slide) => { slide.name = name.value || undefined }, true))
     this.row('Name', name)
 
     const stateSel = document.createElement('select')
@@ -417,8 +433,8 @@ export class PropsPanel {
       stateSel.appendChild(o)
     })
     stateSel.addEventListener('change', () =>
-      this.edit(() => {
-        this.store.slide.stateOf = stateSel.value || undefined
+      this.editSlideAttrs(slideId, (slide: Slide) => {
+        slide.stateOf = stateSel.value || undefined
         this.store.emit('slides')
       }, true))
     stateSel.title = t('A state is hidden from arrow-key flow — viewers reach it by clicking a linked element. Shared element ids morph between states.')
@@ -436,14 +452,14 @@ export class PropsPanel {
     this.row('Hover', this.select(
       ['none', 'focus-group', 'reveal'],
       slide.hover?.type ?? 'none',
-      (v) => this.edit(() => {
-        this.store.slide.hover = v === 'none'
+      (v) => this.editSlideAttrs(slideId, (slide: Slide) => {
+        slide.hover = v === 'none'
           ? undefined
-          : { ...(this.store.slide.hover ?? {}), type: v as 'focus-group' | 'reveal' }
+          : { ...(slide.hover ?? {}), type: v as 'focus-group' | 'reveal' }
       }, true)))
     if (slide.hover?.type === 'focus-group') {
       this.row('Hover dim', this.number(slide.hover.dim ?? 0.15, 0.01, (v, fin) =>
-        this.edit(() => { if (this.store.slide.hover) this.store.slide.hover.dim = Math.min(Math.max(v, 0), 1) }, fin)))
+        this.editSlideAttrs(slideId, (slide: Slide) => { if (slide.hover) slide.hover.dim = Math.min(Math.max(v, 0), 1) }, fin)))
     }
     if (slide.hover?.type === 'reveal') {
       const sets = [...new Set(slide.elements.map((e) => e.showOnHover).filter(Boolean))] as string[]
@@ -452,7 +468,7 @@ export class PropsPanel {
       defIn.placeholder = sets[0] ?? 'set name'
       defIn.value = slide.hover.default ?? ''
       defIn.addEventListener('change', () =>
-        this.edit(() => { if (this.store.slide.hover) this.store.slide.hover.default = defIn.value || undefined }, true))
+        this.editSlideAttrs(slideId, (slide: Slide) => { if (slide.hover) slide.hover.default = defIn.value || undefined }, true))
       this.row('Default set', defIn)
       if (sets.length) {
         this.row('Preview set', this.select(sets, this.store.hoverPreview ?? slide.hover.default ?? sets[0], (v) => {
@@ -480,11 +496,11 @@ export class PropsPanel {
     saveLy.textContent = t('＋ Save slide as layout…')
     saveLy.title = "Add this slide to the document's layout picker (New slide button)"
     saveLy.addEventListener('click', () => {
-      const name = window.prompt('Layout name', this.store.slide.name ?? 'My layout')
+      const name = window.prompt('Layout name', slide.name ?? 'My layout')
       if (!name) return
       this.edit(() => {
         const doc = this.store.doc
-        const copy: Slide = JSON.parse(JSON.stringify(this.store.slide))
+        const copy: Slide = JSON.parse(JSON.stringify(slide))
         doc.layouts = [...(doc.layouts ?? []), { ...copy, id: uid('layout'), name, stateOf: undefined, notes: '' }]
       }, true)
     })
@@ -495,8 +511,10 @@ export class PropsPanel {
     notes.className = 'ed-notes'
     notes.placeholder = t('Notes for presenter view (press S while presenting)…')
     notes.value = slide.notes
-    notes.addEventListener('input', () => this.edit(() => { this.store.slide.notes = notes.value }, false))
-    notes.addEventListener('change', () => this.edit(() => { this.store.slide.notes = notes.value }, true))
+    // Using the captured value of `slide` in the closure here to ensure that we edit the slide that fired the event.
+    // Otherwise we end up racing against store updates.
+    notes.addEventListener('input', () => this.editSlideAttrs(slideId, (slide: Slide) => { slide.notes = notes.value }, false))
+    notes.addEventListener('change', () => this.editSlideAttrs(slideId, (slide: Slide) => { slide.notes = notes.value }, true))
     notes.title = t('Shown in the speaker view (Slideshow menu, or S while presenting).') +
       (isMacOS() ? ' ' + t('On macOS, open the speaker view before going fullscreen.') : '')
     this.host.appendChild(notes)
@@ -1093,6 +1111,25 @@ export class PropsPanel {
         (e as TextElement).fontSize = Math.round(Math.max(v, 3) * (4 / 3) * 100) / 100
       }, fin)))
     this.row('Weight', this.weightSelect(el))
+    // Indent / Outdent bullets (#368): the item under the caret while the box
+    // is open — a press here must not take the caret away, so mousedown is
+    // held — else the whole box. Tab / ⇧Tab do the same while editing.
+    const shift = document.createElement('div')
+    shift.className = 'ed-shift-row'
+    for (const [dir, label, tip] of [
+      [-1, t('Outdent'), t('Move the bullet up a level (⇧Tab while editing)')],
+      [1, t('Indent'), t('Move the bullet down a level, under the one above (Tab while editing)')],
+    ] as const) {
+      const b = document.createElement('button')
+      b.type = 'button'
+      b.className = 'ed-btn'
+      b.textContent = label
+      b.title = tip
+      b.addEventListener('mousedown', (ev) => ev.preventDefault())
+      b.addEventListener('click', (ev) => { ev.preventDefault(); this.onListIndent?.(dir) })
+      shift.appendChild(b)
+    }
+    this.row('Bullets', shift)
     // Text fill: a solid colour, or a multi-stop gradient painted into the glyphs.
     const tgrad = el.colorGradient
     this.row('Fill style', this.labeledSelect(fillStyles(), tgrad ? 'gradient' : 'solid', (v) =>
@@ -2407,7 +2444,7 @@ export class PropsPanel {
     onEdit: (v: string, final: boolean) => void,
     /** when given, offer the deck's brand palette above the free picker.
      *  `id: null` means the property belongs to the slide, not an element. */
-    ref?: { id: string | null; path: string },
+    ref?: { id: string | null; path: string; slide?: Slide },
   ): HTMLElement {
     const input = document.createElement('input')
     input.type = 'color'
@@ -2429,9 +2466,9 @@ export class PropsPanel {
   }
 
   /** Write a colour and its palette reference together, as one undoable edit. */
-  private setRef(ref: { id: string | null; path: string }, literal: string, token: string | null) {
+  private setRef(ref: { id: string | null; path: string; slide?: Slide }, literal: string, token: string | null) {
     this.edit(() => {
-      const holder = ref.id ? this.store.element(ref.id) : this.store.slide
+      const holder = ref.id ? this.store.element(ref.id) : (ref.slide ?? this.store.slide)
       if (holder) setColor(holder as never, ref.path, literal, token)
     }, true)
   }
@@ -2443,11 +2480,11 @@ export class PropsPanel {
    * re-derives it — that is the whole difference between a deck that can be
    * re-branded and one that has 400 hex literals in it.
    */
-  private paletteSwatches(ref: { id: string | null; path: string }, input: HTMLInputElement): HTMLElement {
+  private paletteSwatches(ref: { id: string | null; path: string; slide?: Slide }, input: HTMLInputElement): HTMLElement {
     const row = document.createElement('div')
     row.className = 'ed-swatches'
     const palette = paletteOf(this.store.doc)
-    const holder = (ref.id ? this.store.element(ref.id) : this.store.slide) as never
+    const holder = (ref.id ? this.store.element(ref.id) : (ref.slide ?? this.store.slide)) as never
     const current = holder ? refAt(holder, ref.path) : undefined
     for (const slot of PALETTE_SLOTS) {
       const base = palette[slot]
@@ -2528,7 +2565,7 @@ export class PropsPanel {
   private colorAlpha(
     value: string,
     onEdit: (v: string, final: boolean) => void,
-    ref?: { id: string | null; path: string },
+    ref?: { id: string | null; path: string; slide?: Slide },
   ): HTMLElement {
     const wrap = document.createElement('div')
     wrap.className = 'ed-coloralpha'

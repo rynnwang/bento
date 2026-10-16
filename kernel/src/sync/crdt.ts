@@ -43,9 +43,22 @@
  * this and nothing more: a container of parented nodes, each with an `id`,
  * under two keys named by the DocShape below. Every app's model satisfies it.
  */
+import type { FieldClass, FieldsOfClass } from '../docfields.ts'
+
 type BentoDoc = object
 type Slide = { id: string }
 type SlideElement = { id: string }
+
+/**
+ * THE unknown-key switch. A doc-level key absent from the local app's class map
+ * (a field a NEWER build added) — when one arrives in an op or a snapshot, is it
+ * applied (true: a newer build's content survives an older peer, and lands in
+ * this replica's own file) or ignored (false: fail closed — an unknown field
+ * never enters this replica's doc from the room)? Either way this replica never
+ * EMITS an unknown key (diff is content-class only). One line, by design: the
+ * ruling between the two goes here and nowhere else.
+ */
+const APPLY_UNKNOWN_DOC_KEYS = true
 
 // ---------------------------------------------------------------------------
 // document shape
@@ -122,6 +135,39 @@ export interface DocShape {
    * BODY while both references survive, leaving a marker pointing at nothing.
    */
   readonly maps: ReadonlySet<string>
+  /**
+   * The app's field-class map (docfields.ts), when the app has adopted one. With
+   * it, the engine syncs doc-level keys by ALLOWLIST — the sender rule:
+   *   - a peer EMITS only keys its own map classes 'content' (plus `maps`), on
+   *     every path it mints: the op diff, its snapshot doc + state, and the
+   *     stamped SyncStateJSON. An unknown key — from a newer file opened here,
+   *     or applied from the wire — is never emitted by this peer.
+   *   - a peer IGNORES any incoming key its map knows as non-content (identity,
+   *     mode, capability, history) whatever the sender claims, and applies
+   *     unknown keys per APPLY_UNKNOWN_DOC_KEYS.
+   * Without it, behaviour is the shipped denylist (skipDoc only). skipDoc keys
+   * are never emitted and never applied in either mode.
+   */
+  readonly classes?: Readonly<Record<string, FieldClass>>
+  /**
+   * HISTORY-class doc keys that nonetheless SYNC, as whole-value registers. The
+   * allowlist decides sync by `classes`, but a field's copy class and its sync
+   * decision can diverge: bento/type classes `comments` as history so reader and
+   * export copies drop them (the #663 copy ruling), yet comments must still flow
+   * between live collaborators. Naming such a key here emits and accepts it
+   * though it is non-content — WITHOUT changing its wire shape, so a build that
+   * binds a class map stays mixed-version-compatible with one that does not
+   * (both see the same whole `#doc <key>` register).
+   *
+   * RESTRICTED to history-class keys, two ways: `shape()` throws at runtime if a
+   * named key is not classed 'history' (or there is no class map), and the typed
+   * `historySyncKeys` helper makes naming an identity / mode / capability /
+   * unclassified key a compile error. So this can never become a path around the
+   * floor: skipDoc is still checked FIRST in both gates, and an identity, mode or
+   * capability key can never be listed here at all. For per-key id-maps use
+   * `maps` instead (that one changes the wire shape).
+   */
+  readonly syncHistory: ReadonlySet<string>
 }
 
 /** Derived, never authored: the volatile set is the same for every app apart
@@ -131,11 +177,55 @@ export const shape = (
   children: string | null,
   text = 'html',
   maps: readonly string[] = [],
+  classes?: Readonly<Record<string, FieldClass>>,
+  syncHistory: readonly string[] = [],
 ): DocShape => {
-  const skipDoc = new Set([parents, 'modified', 'collab', 'format', 'version'])
+  // file-local, never synced — each replica keeps its own timeline. (When an app
+  // passes `classes`, PR2 ALSO refuses any non-content / unknown doc key inbound
+  // and emits only content keys — see DocShape.classes; skipDoc is the floor that
+  // holds whether or not an app has adopted a class map.)
+  // docId / readonly / template are identity and file modes: never synced, and —
+  // because skipDoc is ALSO the receive filter (applySet, mergeSnapshot) — never
+  // adopted from a peer either. A remote op can't rewrite a deck's identity,
+  // lock or unlock it, or turn it into a template. `policy` is an encoding tag
+  // like format/version: a loader that meets an unknown one FREEZES the document
+  // read-only on open, so a peer must never be able to set it.
+  const skipDoc = new Set([parents, 'modified', 'collab', 'format', 'version', 'policy', 'revisions', 'trail', 'docId', 'readonly', 'template'])
   // `assets` and `blobs` are per-key for every app and always have been —
   // unioned rather than defaulted so an app naming its own map cannot drop them.
-  return { parents, children, text, skipDoc, maps: new Set(['assets', 'blobs', ...maps]) }
+  // syncHistory may name ONLY history-class keys — the runtime half of the
+  // restriction (the typed helper is the compile half). A key not classed
+  // 'history', or named with no class map at all, is refused here so it can
+  // never widen what syncs beyond a history field an app chose to share.
+  // BELT AND BRACES: also refuse a key that is in skipDoc. The class check
+  // trusts the app's own map, and nothing pins collab/revisions to their class —
+  // an app that MIS-classes a never-synced key as 'history' and names it here
+  // would pass the class check, leaving only the gate ORDER (skipDoc first) to
+  // protect it. Refusing skipDoc ∩ syncHistory at bind time makes a never-synced
+  // field safe regardless of gate order: it can't be named at all.
+  for (const k of syncHistory) {
+    if (skipDoc.has(k)) {
+      throw new Error(`DocShape.syncHistory names "${k}", which is in the never-synced set (skipDoc); a floor field can never be shared, whatever its class`)
+    }
+    if (!classes || classes[k] !== 'history') {
+      throw new Error(`DocShape.syncHistory names "${k}", which is ${classes ? `classed ${classes[k] ?? 'nothing'}` : 'bound with no class map'}; only history-class keys may sync this way`)
+    }
+  }
+  const out: DocShape = { parents, children, text, skipDoc, maps: new Set(['assets', 'blobs', ...maps]), syncHistory: new Set(syncHistory) }
+  return classes ? { ...out, classes } : out
+}
+
+/** Build the `syncHistory` list for `shape()` with a COMPILE-TIME guarantee
+ *  that every key is history-class in `classes`. `FieldsOfClass<M,'history'>` is
+ *  the union of M's history keys, so naming an identity / mode / capability or
+ *  unclassified key is a type error here — the compile half of the restriction
+ *  that `shape()` also enforces at runtime. Usage:
+ *    shape('body', null, 'text', ['footnotes'], TYPE_FIELDS,
+ *          historySyncKeys(TYPE_FIELDS, ['comments'])) */
+export function historySyncKeys<M extends Record<string, FieldClass>>(
+  _classes: M, keys: readonly FieldsOfClass<M, 'history'>[],
+): readonly string[] {
+  return keys as readonly string[]
 }
 
 /** The parent array of a document, and the child array of a parent. Indexed
@@ -232,6 +322,55 @@ export const BLOB_INLINE_MAX = 64 * 1024
 /** composite element node key: slide id + separator + element id. U+001F
  * never appears in model ids (uid() emits [a-z0-9-]; generators use ASCII). */
 const SEP = '\u001f'
+
+/**
+ * Names that address an object's PROTOTYPE when used as a property key.
+ * `obj['__proto__'] = v` doesn't add a field, it swaps the prototype, so a
+ * remote op naming it made doc.readonly / doc.collab READ a peer's values
+ * through inheritance until reload, past any name-based refusal list. Every
+ * name off the wire is checked whole and per segment: dotted map keys, composite
+ * element keys (SEP), and register keys (`node key`, space-separated).
+ */
+const PROTO_NAMES = new Set(['__proto__', 'constructor', 'prototype'])
+const protoName = (s: unknown): boolean =>
+  typeof s === 'string' && s.split(/[.\u001f ]/).some((p) => PROTO_NAMES.has(p))
+
+/** Does any own KEY, at any depth of a wire value, carry a prototype name?
+ *  Fails CLOSED: an object nested past the cap counts as unsafe rather than
+ *  passing uninspected (no real op payload comes close to 64 levels). */
+function hasProtoKey(x: unknown, depth = 0): boolean {
+  if (x === null || typeof x !== 'object') return false
+  if (depth > 64) return true
+  if (Array.isArray(x)) {
+    // Walk ELEMENTS, not index keys: an index is never a prototype name, and
+    // running protoName per index cost ~85ms on a 100k-row snapshot.
+    for (const el of x) if (hasProtoKey(el, depth + 1)) return true
+    // NAMED own keys on an array (structured clone over BroadcastChannel keeps
+    // them) are walked too, values included — but only when the array has any,
+    // so a plain array stays a single pass.
+    const keys = Object.keys(x)
+    if (keys.length !== x.length)
+      for (const k of keys) {
+        if (/^(0|[1-9]\d*)$/.test(k)) continue
+        if (protoName(k) || hasProtoKey((x as unknown as Record<string, unknown>)[k], depth + 1)) return true
+      }
+    return false
+  }
+  for (const k of Object.keys(x)) {
+    if (protoName(k)) return true
+    if (hasProtoKey((x as Record<string, unknown>)[k], depth + 1)) return true
+  }
+  return false
+}
+
+/** A remote op that names a prototype anywhere — in an identifier it addresses
+ *  (k, el, sl, id, a cascade key) or as a key inside its payload. */
+function protoOp(op: Op): boolean {
+  const o = op as unknown as Partial<Record<'k' | 'el' | 'sl' | 'id', unknown>> & { cas?: unknown }
+  if ([o.k, o.el, o.sl, o.id].some(protoName)) return true
+  if (Array.isArray(o.cas) && o.cas.some(protoName)) return true
+  return hasProtoKey(op)
+}
 export const elKey = (sl: string, el: string): string => sl + SEP + el
 export const keySlide = (key: string): string => key.slice(0, key.indexOf(SEP))
 export const keyEl = (key: string): string => key.slice(key.indexOf(SEP) + 1)
@@ -476,10 +615,14 @@ export class SyncEngine {
   stash: Record<string, Record<string, { v?: unknown; r: Reg }>> = {}
   /** live nodes whose winning parent is dead/absent — data parked here */
   limbo: Record<string, SlideElement> = {}
+  // Both are keyed by REMOTE strings (node ids, actor ids) and never serialized,
+  // so they are null-prototype: `??=` on a key like "constructor" must find
+  // nothing, not Object.prototype.constructor. Defence in depth behind the
+  // intake guards (applyOne / applyEffect).
   /** ops targeting nodes we haven't seen yet, keyed by node id */
-  private pending: Record<string, Op[]> = {}
+  private pending: Record<string, Op[]> = Object.create(null)
   /** out-of-order ops per actor awaiting their gap to fill */
-  private gap: Record<string, Op[]> = {}
+  private gap: Record<string, Op[]> = Object.create(null)
 
   /** The document shape. NO DEFAULT, deliberately: a default is how a spaces
    *  call site silently gets slides' shape and corrupts a room that then has
@@ -501,6 +644,62 @@ export class SyncEngine {
 
     this.actor = actor
     this.S = shape
+  }
+
+  // --- the doc-level sender rule (see DocShape.classes) ----------------------
+
+  /** May THIS peer emit doc-level key `k` (a top-level field, or a map's field
+   *  name) on any path it mints? Content-class keys and per-key maps only; never
+   *  a skipDoc key, a known non-content key, or an UNKNOWN key. */
+  outboundDocKey(k: string): boolean {
+    if (this.S.skipDoc.has(k)) return false // floor first — syncHistory can't reach it
+    if (this.S.maps.has(k)) return true
+    if (this.S.syncHistory.has(k)) return true // a history key the app chose to share
+    return !this.S.classes || this.S.classes[k] === 'content'
+  }
+
+  /** Must THIS peer ignore an incoming value for doc-level key `k` (already
+   *  resolved through docField)? Always for skipDoc — the never-synced set:
+   *  capability, identity, file modes, history, volatile/encoding fields — so a
+   *  remote peer or a local page on the channel can't replace the room keys,
+   *  rewrite docId, or flip readonly/template in a victim's open deck (which the
+   *  next save would write to the file). Also for a key an adopted class map
+   *  knows as non-content; for an unknown key, per APPLY_UNKNOWN_DOC_KEYS. With
+   *  no class map this is exactly the shipped skipDoc refusal. */
+  private ignoreInboundDocKey(k: string): boolean {
+    if (this.S.skipDoc.has(k)) return true // floor first — syncHistory can't reach it
+    if (this.S.maps.has(k) || !this.S.classes) return false
+    if (this.S.syncHistory.has(k)) return false // a history key the app chose to share
+    const c = this.S.classes[k]
+    if (c === undefined) return !APPLY_UNKNOWN_DOC_KEYS
+    return c !== 'content'
+  }
+
+  /** The top-level field a doc-level register/op key addresses: `assets.x` →
+   *  `assets` for a per-key map, else the key itself. */
+  private docField(k: string): string {
+    return this.mapKey(k)?.[0] ?? k
+  }
+
+  /** `regs` with every doc-level register this peer may not emit removed —
+   *  the stamped / snapshot form of the state. Key order is preserved. */
+  private outboundRegs(): Record<string, Reg> {
+    const out: Record<string, Reg> = {}
+    for (const [rk, r] of Object.entries(this.regs)) {
+      if (rk.startsWith(`${DOC_NODE} `) && !this.outboundDocKey(this.docField(rk.slice(DOC_NODE.length + 1)))) continue
+      out[rk] = r
+    }
+    return out
+  }
+
+  /** A shallow copy of `doc` holding only the top-level keys this peer may emit
+   *  (plus the structural container), for a snapshot frame: the doc rides beside
+   *  the state, so a value the state no longer carries must not travel either. */
+  outboundDoc<T extends object>(doc: T): T {
+    const src = doc as Record<string, unknown>
+    const out: Record<string, unknown> = {}
+    for (const k of Object.keys(src)) if (k === this.S.parents || this.outboundDocKey(k)) out[k] = src[k]
+    return out as T
   }
 
   /** actors with buffered out-of-order ops → catch-up should be requested */
@@ -548,7 +747,9 @@ export class SyncEngine {
       v: SYNC_V,
       lamport: this.lamport,
       vv: this.vv,
-      regs: this.regs,
+      // the sender rule: a stamped/snapshot state never carries a doc-level
+      // register this peer may not emit (non-content, skipDoc, or unknown)
+      regs: this.outboundRegs(),
       pos: this.pos,
       births: this.births,
       tombs: this.tombs,
@@ -573,7 +774,15 @@ export class SyncEngine {
     s.lamport = j.lamport
     s.vv = j.vv ?? {}
     s.seq = s.vv[actor] ?? 0
-    s.regs = j.regs ?? {}
+    // Loaded state follows the same rule as the wire: a doc-level register this
+    // peer would IGNORE inbound (skipDoc, or a key its map knows as non-content)
+    // is dropped, so state stamped before the allowlist can't replay a history /
+    // mode / capability field. Exact by key, so no SYNC_V bump is needed.
+    s.regs = {}
+    for (const [rk, r] of Object.entries(j.regs ?? {})) {
+      if (rk.startsWith(`${DOC_NODE} `) && s.ignoreInboundDocKey(s.docField(rk.slice(DOC_NODE.length + 1)))) continue
+      s.regs[rk] = r
+    }
     s.pos = j.pos ?? {}
     s.births = j.births ?? {}
     s.tombs = j.tombs ?? {}
@@ -624,11 +833,13 @@ export class SyncEngine {
     }
 
     // ---- doc-level props
-    const SKIP_DOC = this.S.skipDoc
     const b = before as unknown as Record<string, unknown>
     const a = after as unknown as Record<string, unknown>
     for (const k of new Set([...Object.keys(b), ...Object.keys(a)])) {
-      if (SKIP_DOC.has(k)) continue
+      // The sender rule: only content-class keys (or per-key maps) are diffed.
+      // A key this build doesn't classify is never emitted — and so a field it
+      // doesn't know can never be DELETED by it either: silence is not a del.
+      if (!this.outboundDocKey(k)) continue
       // `assets` and `blobs` are per-KEY registers, not whole-map ones, so two
       // people adding different assets concurrently both keep theirs.
       if (this.S.maps.has(k)) {
@@ -919,6 +1130,9 @@ export class SyncEngine {
 
   private applyOne(doc: BentoDoc, op: Op, res: ApplyResult) {
     if (op.a === this.actor) return // own ops are pre-applied at diff time
+    // An actor id is used as a key in vv / gap; a prototype-shaped one is no real
+    // peer, so it is dropped before it can touch either table.
+    if (protoName(op.a)) return
     const seen = this.vv[op.a] ?? 0
     if (op.s <= seen) return // duplicate
     if (op.s > seen + 1) {
@@ -943,6 +1157,13 @@ export class SyncEngine {
   }
 
   private applyEffect(doc: BentoDoc, op: Op, res: ApplyResult) {
+    // A prototype-shaped name anywhere in the op: CONSUMED, never applied. The
+    // version vector already advanced in applyOne, so the sender's later ops
+    // still deliver — dropping it from the sequence would stall them.
+    if (protoOp(op)) {
+      dbg(String((op as { el?: string }).el ?? '?'), `${op.op} DROP prototype-shaped name`)
+      return
+    }
     // A FLAT document has no element layer, so an element-scoped op has
     // nowhere to land. It should never arrive — peers in a room share a shape
     // — but the frame came off the wire, and materializing it would either
@@ -1015,6 +1236,11 @@ export class SyncEngine {
 
   private applySet(doc: BentoDoc, op: SetOp, res: ApplyResult) {
     const nodeId = op.el ?? op.sl ?? DOC_NODE
+    // A doc-level key this peer's map knows as non-content (or skipDoc) is never
+    // applied, whatever the sender claims — no register, no value. Checked before
+    // any bookkeeping so a hostile or older peer leaves no trace. With no class
+    // map this is exactly the shipped skipDoc refusal.
+    if (nodeId === DOC_NODE && this.ignoreInboundDocKey(this.docField(op.k))) return
     const rk = `${nodeId} ${op.k}`
     if (!newer(op.l, op.a, this.regs[rk])) return
     // birth gate: an ins is a whole-node assignment — sets older than the
@@ -1435,6 +1661,10 @@ export class SyncEngine {
   mergeSnapshot(doc: BentoDoc, rdoc: BentoDoc, rstate: SyncStateJSON): ApplyResult {
     const res: ApplyResult = { changed: false, structure: false }
     if (rstate.v !== SYNC_V) return res // pre-v2 snapshot: bare-id keys, unusable
+    // A snapshot whose state or doc carries a prototype-shaped key anywhere is
+    // refused whole: its ids/keys feed pos, births, regs, stash and doc writes,
+    // and no honest peer ever produces one. Catch-up still arrives via ops.
+    if (hasProtoKey(rstate) || hasProtoKey(rdoc)) return res
     this.lamport = Math.max(this.lamport, rstate.lamport)
     for (const [a, s] of Object.entries(rstate.vv ?? {})) {
       if ((this.vv[a] ?? 0) < s) {
@@ -1565,6 +1795,9 @@ export class SyncEngine {
       const sp = rk.indexOf(' ')
       const nodeId = rk.slice(0, sp)
       const key = rk.slice(sp + 1)
+      // The snapshot path writes doc fields too, so it obeys the same receive
+      // rule as applySet: a key this peer knows as non-content never lands.
+      if (nodeId === DOC_NODE && this.ignoreInboundDocKey(this.docField(key))) continue
       if (!regNewer(rr, this.regs[rk])) continue
       this.regs[rk] = clone(rr) // registers advance even for dead nodes
       if (nodeId !== DOC_NODE) {

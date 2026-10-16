@@ -31,7 +31,7 @@
 
 import 'fake-indexeddb/auto'
 import { configureApp } from '../kernel/src/app.ts'
-import { putRecovery, getRecovery, addVersion, listVersions } from '../kernel/src/autosave.ts'
+import { putRecovery, getRecovery, addVersion, listVersions, recoveryLooksOlder } from '../kernel/src/autosave.ts'
 
 const APP = process.env.BENTO_TEST_APP || 'bento-slides'
 const EXPECTED_DB = `${APP}-autosave`
@@ -152,6 +152,23 @@ ok(after.length === 4, `adding one version gives 4, not 7 — the legacy rows we
   const v = (await listVersions('deck-collab'))[0]
   ok(!('collab' in JSON.parse(v.json)), 'a version snapshot drops collab too')
   ok(!v.json.includes('OWNERPRIV') && v.json.includes('CONTENT-STAYS'), 'version keeps content, not secrets')
+}
+
+// recoveryLooksOlder — the WARN signal (maintainer ruling): snap.at (ms) vs
+// doc.modified (ISO). A SIGNAL only; it never hides the offer.
+{
+  const snap = (at: number) => ({ docId: 'd', at, title: 't', json: '{}' })
+  const iso = (s: string) => ({ modified: s })
+  ok(recoveryLooksOlder(snap(Date.parse('2026-01-01T00:00:00Z')), iso('2026-02-01T00:00:00Z')) === true,
+    'a snapshot older than the file is flagged (number ms vs ISO string, compared as ms)')
+  ok(recoveryLooksOlder(snap(Date.parse('2026-03-01T00:00:00Z')), iso('2026-02-01T00:00:00Z')) === false,
+    'a newer snapshot is not flagged')
+  ok(recoveryLooksOlder(snap(Date.parse('2026-02-01T00:00:00Z')), iso('2026-02-01T00:00:00Z')) === false,
+    'equal times are not "older"')
+  ok(recoveryLooksOlder(snap(123), {}) === false, 'no modified on the file (old doc) → say nothing (false)')
+  ok(recoveryLooksOlder(snap(123), iso('not a date')) === false, 'an unparseable modified → say nothing')
+  ok(recoveryLooksOlder(snap(200), { modified: 100 }) === false && recoveryLooksOlder(snap(100), { modified: 200 }) === true,
+    'a numeric modified is compared directly (both-ms path)')
 }
 
 console.log(`\n[${APP}] ${checks - failures}/${checks} checks passed`)

@@ -8,11 +8,13 @@
 // module — this rig does not re-test IndexedDB. What is app-specific, and
 // what this pins instead:
 //
-//   1. docContentKey ignores volatile fields (modified, signatures, sync,
-//      collab, preview, autosave — canon.ts's VOLATILE set) but is sensitive
-//      to real content, so the boot-time "is this actually different from
-//      what's on disk" check neither nags on every reload nor stays silent
-//      when there really is unsaved work.
+//   1. docContentKey ignores BOOKKEEPING (modified, preview, autosave) and
+//      capability (collab, and the sync state inside it), but counts every
+//      piece of work the file on disk could lack — including a signature, a
+//      comment and a Snapshot. So the boot-time "is this actually different
+//      from what's on disk" check neither nags on every reload nor stays
+//      silent when there really is unsaved work. It is NOT canon.ts's
+//      signing set: see autosave.ts docContentKey for why those differ.
 //   2. canSnapshot() — the encryption guard — refuses the moment the kernel's
 //      encryption state goes active, and un-refuses when it clears. This is
 //      the one line responsible for "never write plaintext to IndexedDB
@@ -21,11 +23,14 @@
 //      the document EXACTLY (byte-for-byte JSON) and lands as ONE undo step
 //      — never a silent, un-undoable swap of the document under the author.
 
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { configureApp } from '../kernel/src/app.ts'
 import { setEncryptionPassword } from '../kernel/src/save.ts'
 import { docContentKey, canSnapshot } from '../type/src/autosave.ts'
 import { emptyDoc, uid, type TypeDoc } from '../type/src/model.ts'
 import { Store } from '../type/src/store.ts'
+import { gateRestored } from '../type/src/restoregate.ts'
 
 configureApp({ appId: 'bento-type-test', appName: 'bento/type (test)', manifestUrl: 'https://example.invalid/m.json' })
 
@@ -40,21 +45,20 @@ const doc = (): TypeDoc => {
   return d
 }
 
-H('docContentKey ignores fields that churn without a real edit')
+H('docContentKey ignores bookkeeping, which churns without any work done')
 {
   const a = doc()
   const b: TypeDoc = JSON.parse(JSON.stringify(a))
-  // Touch every volatile field canon.ts's VOLATILE set names, none of which
-  // is a content edit — a save, a sync round-trip, and re-signing all churn
-  // these without the author having typed anything.
+  // A save stamps `modified`, a sync round-trip rewrites collab's state, and
+  // neither is anything the author would want offered back on reload.
   a.modified = '2026-01-01T00:00:00.000Z'
   b.modified = '2099-12-31T23:59:59.000Z'
-  a.signatures = []
-  b.signatures = [{ alg: 'ES256', pub: 'x', name: 'Alice', content: 'x', prev: '', sig: 'x' }]
   ;(a as any).collab = { room: 'r1', key: 'k1' }
   ;(b as any).collab = { room: 'r2', key: 'k2', sync: { v: 1 } }
+  ;(a as any).preview = '<div>old</div>'
+  ;(b as any).preview = '<div>new</div>'
   ok(docContentKey(a) === docContentKey(b),
-    'modified/signatures/collab differ but the content key agrees')
+    'modified/collab/preview differ but the content key agrees')
 
   const c = doc()
   c.body[0].text = 'Payment is due within 45 days.'
@@ -109,6 +113,115 @@ H('restoring a recovered snapshot round-trips the document exactly')
   ok(store.undoDepth === before + 1, 'replace() pushed exactly one undo step — restore is ONE ⌘Z away from undone')
   ok(store.undo(), 'undo succeeds')
   ok(store.doc.body[0].text === openDoc.body[0].text, 'undo reverts the restore back to what was open before it')
+}
+
+H('work the file on disk lacks is unsaved work — even when no text changed')
+{
+  // This rig USED to assert the opposite for signatures ("re-signing churns
+  // these without the author having typed anything"), and so certified the
+  // bug: the recovery key reused canon.ts's SIGNING set, a signature is
+  // rightly outside what it signs, and that same exclusion made it invisible
+  // to recovery. The question here is not "did anyone type?" but "does the
+  // snapshot hold work the file lacks?" — and a signature is exactly that.
+  const base = doc()
+  const signed: TypeDoc = JSON.parse(JSON.stringify(base))
+  signed.signatures = [{ alg: 'ES256', pub: 'P', name: 'Alice', content: 'C', prev: '', sig: 'S' } as any]
+  ok(docContentKey(base) !== docContentKey(signed),
+    'a signature added since the last write changes the content key')
+
+  const commented: TypeDoc = JSON.parse(JSON.stringify(base))
+  ;(commented as any).comments = { c1: { id: 'c1', text: 'check clause 4', author: 'Bob', at: 'x', replies: [] } }
+  ok(docContentKey(base) !== docContentKey(commented),
+    'a comment added since the last write changes the content key')
+
+  const snapped: TypeDoc = JSON.parse(JSON.stringify(base))
+  snapped.revisions = [{ id: 'rev1', at: 'x', label: 'Revision 1', body: JSON.parse(JSON.stringify(base.body)) }]
+  ok(docContentKey(base) !== docContentKey(snapped),
+    'a Snapshot taken since the last write changes the content key')
+}
+
+H('THE CRASH CASE: sign, crash before the file is written, reload')
+{
+  // Through the real decision path checkRecovery takes — gateRestored, then
+  // the key comparison — minus IndexedDB, which test-autosave.ts already
+  // proves against the kernel. The file on disk is `live`: opened, never
+  // re-written. The recovery snapshot is what the crashed session last held.
+  const live = doc()
+  const snapshot: TypeDoc = JSON.parse(JSON.stringify(live))
+  snapshot.modified = '2099-01-01T00:00:00.000Z'
+  snapshot.signatures = [{ alg: 'ES256', pub: 'P', name: 'Alice', content: 'C', prev: '', sig: 'S' } as any]
+
+  const recovered = gateRestored(JSON.stringify(snapshot), live)
+  ok(recovered !== null, 'the snapshot passes the restore gate')
+  ok(docContentKey(recovered!) !== docContentKey(live),
+    'the Restore banner is OFFERED — the snapshot holds a signature the file lacks')
+  ok(recovered!.signatures.length === 1 && recovered!.signatures[0].name === 'Alice',
+    'and restoring it brings the signature back, not just the banner')
+  ok(recovered!.docId === live.docId, 'while identity still comes from the live file, never the snapshot')
+
+  // The control: a snapshot that differs only by bookkeeping must NOT nag.
+  const churn: TypeDoc = JSON.parse(JSON.stringify(live))
+  churn.modified = '2099-01-01T00:00:00.000Z'
+  const quiet = gateRestored(JSON.stringify(churn), live)
+  ok(quiet !== null && docContentKey(quiet) === docContentKey(live),
+    'a snapshot differing only in modified offers nothing — no banner on every reload')
+}
+
+H('Save a copy… (a \'copied\' result) must not clear the dot (asserted at source)')
+{
+  // type's save() is module-level and DOM-bound, so this is pinned at source
+  // like the kernel's saveFile ordering. "Save a copy…" returns 'copied'; the
+  // open document is still unsaved, so dirty must stay set and paintTitle must
+  // not claim "Saved". Mutation: clearing dirty for any non-'cancelled' result
+  // (the old `dirty = false`) reds this.
+  const src = readFileSync(fileURLToPath(new URL('../type/src/main.ts', import.meta.url)), 'utf8')
+  const save = src.slice(src.indexOf('async function save('), src.indexOf('async function save(') + 1200)
+  ok(/if \(result === 'cancelled'\) return;/.test(save), 'save() returns early on cancelled')
+  ok(/if \(result === 'saved' \|\| result === 'saved-as' \|\| result === 'downloaded'\) dirty = false;/.test(save),
+    'save() clears dirty ONLY for saved / saved-as / downloaded — never for a copy')
+  ok(!/if \(result === 'cancelled'\) return;\s*dirty = false;/.test(save),
+    'and never clears dirty unconditionally after the cancelled guard')
+}
+
+H('a recovery snapshot with NO signatures never pairs its revisions with the live signatures')
+{
+  // Signatures cover content AND revisions, so a restore that took the
+  // snapshot's revisions but kept the file's signatures would show signatures
+  // over a history they never saw — every one reading "changed". The newer
+  // state is genuinely unsigned, so the right outcome is NO signatures.
+  //
+  // What makes that true in type is parseDoc DEFAULTING an absent `signatures`
+  // to [] (model.ts) before any restore logic sees the snapshot. A recovery
+  // rule that keeps the live value when a field is ABSENT would otherwise keep
+  // the file's signatures. That default is an implementation detail, so this
+  // row pins it at type's seam: break it and this goes red.
+  //
+  // Through the banner's own restore path: gateRestored, then store.replace.
+  const live = doc()
+  live.revisions = [{ id: 'r1', at: '2026-01-01T00:00:00.000Z', label: 'Revision 1',
+                      body: JSON.parse(JSON.stringify(live.body)) }]
+  live.signatures = [{ alg: 'ES256', pub: 'P', name: 'Bob', content: 'C', prev: '', sig: 'S' } as any]
+  ok(live.signatures.length === 1 && live.signatures[0].name === 'Bob',
+    'the FILE really is signed (Bob) — so "no signatures after restore" is a result, not a fixture')
+
+  // The crashed session held a NEWER revision and no signatures at all — and
+  // its JSON lacks the key entirely, not just an empty list.
+  const newer = JSON.parse(JSON.stringify(live)) as Record<string, unknown>
+  ;(newer.revisions as unknown[]).push({ id: 'r2', at: '2026-02-01T00:00:00.000Z', label: 'Revision 2',
+                                         body: JSON.parse(JSON.stringify(live.body)) })
+  delete newer.signatures
+  ok(!('signatures' in newer), 'the snapshot JSON genuinely has no signatures key')
+
+  const gated = gateRestored(JSON.stringify(newer), live)
+  ok(gated !== null, 'the snapshot passes the restore gate')
+  const store = new Store(live)
+  store.replace(gated!)
+  ok(store.doc.revisions.length === 2 && store.doc.revisions[1].id === 'r2',
+    'the restore takes the snapshot\'s revisions')
+  ok(Array.isArray(store.doc.signatures) && store.doc.signatures.length === 0,
+    'and NO signatures — the snapshot\'s unsigned state, not an absent field')
+  ok(!JSON.stringify(store.doc.signatures ?? []).includes('Bob'),
+    'the file\'s signatures are never paired with the snapshot\'s revisions')
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`)

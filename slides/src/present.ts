@@ -20,6 +20,7 @@ import type { ShowEvent, ShowVerbs } from '../../kernel/src/sync/session.ts'
 import { FollowState, laserDue } from './follow'
 import { StepState, stepOf, shownAt } from './steps'
 import { offlineEnabled } from './update'
+import { countPlan } from './countnumber'
 
 const MORPH_DURATION_DEFAULT = 0.65
 /** Set per-deck by doc.present.morphSeconds; clamped to something sane. */
@@ -1724,86 +1725,18 @@ function settleGuarantee(pairs: Array<[HTMLElement, SlideElement]>) {
 }
 
 /** Animate every number in the element's text from 0 to its final value. */
-/**
- * How a number was WRITTEN, so the count-up can put it back the same way.
- *
- * The number must settle exactly as the author typed it. Routing through
- * `Intl.NumberFormat(navigator.language)` is the tempting fix and the wrong
- * one: slide content is authored, so the same deck would read `1,234.5` for
- * one viewer and `1.234,5` for another. Locale follows the viewer for CHROME
- * only (`PLATFORM.md` §3).
- */
-interface NumberShape {
-  value: number
-  decimals: number
-  group: string   // separator between thousands, '' if the author used none
-  point: string   // decimal separator, '' if the number is an integer
-}
-
-/**
- * Read an authored number. Separators are genuinely ambiguous, so the rules
- * are stated rather than guessed:
- *
- * - BOTH `.` and `,` present → the LAST one is the decimal point, the other
- *   groups. `1,234.5` → 1234.5, `1.234,5` → 1234.5.
- * - Only `,` → grouping if there are several (`1,234,567`), or if a single one
- *   is followed by exactly three digits (`1,234`). Otherwise a decimal comma
- *   (`1,23`, `1,2345`).
- * - Only `.` → a decimal point, always. A deck writing `1.234` means
- *   one-point-two-three-four; reading it as grouping would break every
- *   three-decimal number to fix a rarer case.
- */
-function readNumber(raw: string): NumberShape {
-  const dots = (raw.match(/\./g) ?? []).length
-  const commas = (raw.match(/,/g) ?? []).length
-  let point = ''
-  if (dots && commas) point = raw.lastIndexOf('.') > raw.lastIndexOf(',') ? '.' : ','
-  else if (commas) point = commas > 1 || /,\d{3}$/.test(raw) ? '' : ','
-  else if (dots) point = '.'
-  const group = point === '.' ? (commas ? ',' : '')
-    : point === ',' ? (dots ? '.' : '')
-      : (commas ? ',' : dots ? '.' : '')
-  const cut = point ? raw.lastIndexOf(point) : -1
-  const whole = (cut >= 0 ? raw.slice(0, cut) : raw).replace(/[.,]/g, '')
-  const frac = cut >= 0 ? raw.slice(cut + 1) : ''
-  return { value: Number(frac ? `${whole}.${frac}` : whole), decimals: frac.length, group, point }
-}
-
-/** Put a number back in the author's own convention. */
-function writeNumber(value: number, shape: NumberShape): string {
-  const fixed = value.toFixed(shape.decimals)
-  const dot = fixed.indexOf('.')
-  let whole = dot >= 0 ? fixed.slice(0, dot) : fixed
-  const frac = dot >= 0 ? fixed.slice(dot + 1) : ''
-  if (shape.group) whole = whole.replace(/\B(?=(\d{3})+(?!\d))/g, shape.group)
-  return frac ? whole + shape.point + frac : whole
-}
-
 function runCountUp(node: HTMLElement) {
   const inner = node.querySelector<HTMLElement>('.bento-text-inner') ?? node
-  const final = inner.textContent ?? ''
-  // Separators only count BETWEEN digits, so a sentence ending in a number
-  // ("grew 25.") keeps its full stop instead of having it swallowed and
-  // re-emitted as part of the value.
-  const tokens = [...final.matchAll(/\d+(?:[.,]\d+)*/g)]
-  if (!tokens.length) return
-  const shapes = tokens.map((m) => readNumber(m[0]))
+  // what animates and what stays as authored: countnumber.ts countPlan
+  const plan = countPlan(inner.textContent ?? '')
+  if (!plan) return
   const state = { p: 0 }
   anim.to(state, {
     p: 1,
     duration: 1.15,
     delay: 0.15,
     ease: 'power2.out',
-    onUpdate() {
-      let out = ''
-      let last = 0
-      tokens.forEach((m, i) => {
-        out += final.slice(last, m.index)
-        out += writeNumber(shapes[i].value * state.p, shapes[i])
-        last = m.index! + m[0].length
-      })
-      inner.textContent = out + final.slice(last)
-    },
+    onUpdate() { inner.textContent = plan(state.p) },
   })
 }
 

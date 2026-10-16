@@ -57,6 +57,20 @@ if (!app) {
 }
 
 const version = JSON.parse(readFileSync(join(root, `${app.dir}/package.json`), 'utf8')).version
+
+// bento.page/import refuses to build on a slides shell older than
+// convert/src/deliver.ts MIN_SHELL_VERSION. A slides release below that floor
+// would ship a page that refuses the very release it shipped with, so it is
+// stopped here, before anything is built or signed.
+if (app.ownsSiteContent) {
+  const floor = /export const MIN_SHELL_VERSION = '([\d.]+)'/.exec(
+    readFileSync(join(root, 'convert/src/deliver.ts'), 'utf8'))?.[1]
+  if (!floor) { console.error('✗ convert/src/deliver.ts has no MIN_SHELL_VERSION'); process.exit(1) }
+  if (cmpVer(version, floor) < 0) {
+    console.error(`✗ ${app.appId} v${version} is below MIN_SHELL_VERSION ${floor} (convert/src/deliver.ts): bento.page/import would refuse this release`)
+    process.exit(1)
+  }
+}
 const shellSrc = join(root, `${app.dir}/dist-single/${app.shell}`)
 // Where the site is assembled. `site/` for a real release — publish-site.mjs
 // mirrors exactly that path — and `--out` for a rehearsal, so
@@ -378,6 +392,15 @@ if (app.ownsSiteContent) {
   // 404 — of course it's a deck (see build-404-deck.mjs + site-src/404.html).
   execFileSync('node', [join(root, 'scripts/build-404-deck.mjs'), join(site, '404.bento.html')], { stdio: 'inherit' })
   cpSync(join(root, 'site-src/404.html'), join(site, '404.html'))
+
+  // /convert — one page for every conversion (convert/page + convert/src;
+  // nothing uploaded), built into a single page with a hash-based CSP
+  // (scripts/build-convert-page.mjs). No shell carries any of it.
+  execFileSync('node', [join(root, 'scripts/build-convert-page.mjs'), join(site, 'convert/index.html')], { stdio: 'inherit' })
+  // /import — kept as a static, script-free redirect to /convert?from=pptx:
+  // the slides menu entry and the release announcement link to it.
+  mkdirSync(join(site, 'import'), { recursive: true })
+  cpSync(join(root, 'site-src/import.html'), join(site, 'import/index.html'))
 
   // /q — "this QR code is a presentation" (deck lives in the URL fragment).
   execFileSync('node', [join(root, 'scripts/build-qr-page.mjs'), join(site, 'q/index.html')], { stdio: 'inherit' })
