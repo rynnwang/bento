@@ -1044,23 +1044,36 @@ async function handlePdf(req: Request, env: Env, id: string): Promise<Response> 
 
   const chromiumRange = range ? toChromiumRange(range) : undefined
   let bytes: ArrayBuffer
-  try {
+  const renderOnce = async (): Promise<ArrayBuffer | null> => {
     if (meta.kind === 'html') {
       const rawHtml = await getDeckHtml(env, id)
-      if (rawHtml === null) return notFound()
-      bytes = await renderHtmlDeckPdf(env, rawHtml, chromiumRange)
-    } else if (meta.kind === 'md') {
+      return rawHtml === null ? null : await renderHtmlDeckPdf(env, rawHtml, chromiumRange)
+    }
+    if (meta.kind === 'md') {
       const md = await getDeckMd(env, id)
-      if (md === null) return notFound()
       // The rendered page carries its own print stylesheet (markdown.ts's
       // PAGE_CSS) — same standard-pagination path any 'html' deck gets.
-      bytes = await renderHtmlDeckPdf(env, renderMdPage(md), chromiumRange)
-    } else {
-      // The deck's OWN live URL — whatever a real viewer would see (editor or
-      // player mode, per `access`) is exactly what gets rendered.
-      const origin = new URL(req.url).origin
-      bytes = await renderBentoDeckPdf(env, `${origin}/d/${id}`, chromiumRange)
+      return md === null ? null : await renderHtmlDeckPdf(env, renderMdPage(md), chromiumRange)
     }
+    // The deck's OWN live URL — whatever a real viewer would see (editor or
+    // player mode, per `access`) is exactly what gets rendered.
+    return await renderBentoDeckPdf(env, `${new URL(req.url).origin}/d/${id}`, chromiumRange)
+  }
+  try {
+    let out: ArrayBuffer | null
+    try {
+      out = await renderOnce()
+    } catch (first) {
+      // Browser Rendering's free plan allows ONE new browser every 20 s and 3 at a
+      // time; a second download (or a retry) right after another gets a 429. That is
+      // a wait, not a failure — sleep past the window (I/O wait, not CPU) and retry once.
+      if (!/429|too many|rate limit/i.test(String((first as Error)?.message ?? first))) throw first
+      console.warn('pdf render rate-limited, retrying once', id)
+      await new Promise((r) => setTimeout(r, 21_000))
+      out = await renderOnce()
+    }
+    if (out === null) return notFound()
+    bytes = out
   } catch (e) {
     // Chromium rejects a range that starts past the last page; say so plainly.
     if (range && /page range/i.test(String((e as Error)?.message))) {
@@ -1071,15 +1084,17 @@ async function handlePdf(req: Request, env: Env, id: string): Promise<Response> 
     // "internal error". Log the real cause and tell the viewer what it was.
     console.error('pdf render failed', id, range ?? 'all', e)
     const raw = String((e as Error)?.message ?? e).replace(/\s+/g, ' ').slice(0, 160)
-    const limited = /429|limit|too many|rate|quota|exceeded/i.test(raw)
-    return json(
-      {
-        error: limited
-          ? 'PDF rendering is temporarily unavailable (the browser-rendering limit was reached). Try again in a few minutes.'
-          : `PDF rendering failed: ${raw}`,
-      },
-      { status: 503 },
-    )
+    // Say what Cloudflare actually said (it distinguishes the DAILY minutes cap from
+    // the per-20-seconds / concurrency limits — they need different advice) and
+    // always include the raw reason so a wrong guess here can't hide the cause.
+    const daily = /time limit exceeded|daily|for today/i.test(raw)
+    const rate = /429|too many|rate limit|concurrent/i.test(raw)
+    const advice = daily
+      ? 'The free daily browser-time allowance is used up (it resets at midnight UTC).'
+      : rate
+        ? 'Cloudflare is limiting how fast browsers can be started (free plan: one every 20 s, three at once). Wait a minute and try again.'
+        : 'PDF rendering failed.'
+    return json({ error: `${advice} (${raw})` }, { status: 503 })
   }
   const pages = countPdfPages(bytes)
   await putCachedPdf(env, id, meta.updated_at, PDF_RENDER_VERSION, bytes, variant, range ? null : pages)

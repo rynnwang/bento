@@ -11321,3 +11321,15 @@ reach the deck, so click-to-advance / its own buttons keep working). Enter/Esc/C
 are handled inside that same capture handler since the element no longer sees keydown.
 Limit: a deck that registers its own capture listener on `window` before ours can't be
 pre-empted. Verified in a browser against a stub deck with counting handlers.
+
+## 2026-10-30 — PDF render failures: stop guessing "daily limit"; retry rate-limits once
+
+The Cloudflare dashboard (Oct 1–30: 15 sessions, 0.06 browser-hours) showed the daily
+10-minute allowance was NOT what blocked a download, so the first diagnostic message
+("browser-rendering limit reached") was a wrong guess from a loose regex. Browser
+Rendering's free plan also limits NEW browsers to one per 20 s and three concurrent;
+a download right after another (or a click-retry) trips that as a 429. `handlePdf`
+now (1) retries once after 21 s when the error looks like 429/rate-limit (wall-clock
+wait, not CPU), (2) distinguishes the daily cap ("time limit exceeded… for today")
+from the rate/concurrency limit in its advice, and (3) always appends Cloudflare's own
+message (≤160 chars) so the cause is visible even when classification is wrong.
