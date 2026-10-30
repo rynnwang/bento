@@ -437,6 +437,13 @@ export async function deleteDeck(env: Env, id: string): Promise<void> {
   await env.DOCS.delete(deckDocKey(id))
   await env.DOCS.delete(deckHtmlKey(id))
   await env.DOCS.delete(deckMdKey(id))
+  await env.DOCS.delete(deckPdfKey(id))
+  let pdfCursor: string | undefined
+  do {
+    const listed = await env.DOCS.list({ prefix: `pdf/${id}/`, cursor: pdfCursor })
+    if (listed.objects.length) await env.DOCS.delete(listed.objects.map((o) => o.key))
+    pdfCursor = listed.truncated ? listed.cursor : undefined
+  } while (pdfCursor)
   await env.DB.prepare(`DELETE FROM decks WHERE id = ?`).bind(id).run()
 }
 
@@ -475,8 +482,11 @@ export async function getAsset(env: Env, deckId: string, key: string): Promise<R
   return env.DOCS.get(`assets/${deckId}/${key}`)
 }
 
-function deckPdfKey(id: string): string {
-  return `pdf/${id}.pdf`
+/** `variant` = a canonical page-range string (see pdfPages.ts), or '' for the
+ *  whole document. Ranged renders live under `pdf/<id>/` so deleteDeck can
+ *  sweep them by prefix. */
+function deckPdfKey(id: string, variant = ''): string {
+  return variant ? `pdf/${id}/${variant}.pdf` : `pdf/${id}.pdf`
 }
 
 /** Returns the cached PDF only if it was rendered from the deck's CURRENT
@@ -489,17 +499,32 @@ function deckPdfKey(id: string): string {
  *  scarce and this endpoint is reachable by any viewer with access, not
  *  just the owner, so a cache miss should be rare in practice otherwise
  *  (one render per edit, not one per download). */
-export async function getCachedPdf(env: Env, id: string, updatedAt: number, renderVersion: number): Promise<ArrayBuffer | null> {
-  const obj = await env.DOCS.get(deckPdfKey(id))
+export async function getCachedPdf(
+  env: Env,
+  id: string,
+  updatedAt: number,
+  renderVersion: number,
+  variant = '',
+): Promise<{ bytes: ArrayBuffer; pages: number | null } | null> {
+  const obj = await env.DOCS.get(deckPdfKey(id, variant))
   if (!obj) return null
   if (obj.customMetadata?.updatedAt !== String(updatedAt)) return null
   if (obj.customMetadata?.renderVersion !== String(renderVersion)) return null
-  return obj.arrayBuffer()
+  const pages = Number(obj.customMetadata?.pages)
+  return { bytes: await obj.arrayBuffer(), pages: Number.isInteger(pages) && pages > 0 ? pages : null }
 }
 
-export async function putCachedPdf(env: Env, id: string, updatedAt: number, renderVersion: number, bytes: ArrayBuffer): Promise<void> {
-  await env.DOCS.put(deckPdfKey(id), bytes, {
+export async function putCachedPdf(
+  env: Env,
+  id: string,
+  updatedAt: number,
+  renderVersion: number,
+  bytes: ArrayBuffer,
+  variant = '',
+  pages: number | null = null,
+): Promise<void> {
+  await env.DOCS.put(deckPdfKey(id, variant), bytes, {
     httpMetadata: { contentType: 'application/pdf' },
-    customMetadata: { updatedAt: String(updatedAt), renderVersion: String(renderVersion) },
+    customMetadata: { updatedAt: String(updatedAt), renderVersion: String(renderVersion), ...(pages ? { pages: String(pages) } : {}) },
   })
 }

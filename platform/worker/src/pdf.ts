@@ -48,7 +48,7 @@ export const PDF_RENDER_VERSION = 4
  *  `window.bento.preparePdf()` hook (both editor and player mode expose it),
  *  then lets Puppeteer's own `page.pdf({preferCSSPageSize:true})` read the
  *  resulting `@page` CSS rule directly instead of calling window.print(). */
-export async function renderBentoDeckPdf(env: Env, viewUrl: string): Promise<Buffer> {
+export async function renderBentoDeckPdf(env: Env, viewUrl: string, pageRanges?: string): Promise<Buffer> {
   const browser = await puppeteer.launch(env.BROWSER)
   try {
     const page = await browser.newPage()
@@ -57,7 +57,7 @@ export async function renderBentoDeckPdf(env: Env, viewUrl: string): Promise<Buf
     await page.waitForFunction('window.bento && typeof window.bento.preparePdf === "function"')
     await page.evaluate('window.bento.preparePdf()')
     await page.waitForSelector('#bento-print')
-    return await page.pdf({ preferCSSPageSize: true, printBackground: true })
+    return await page.pdf({ preferCSSPageSize: true, printBackground: true, ...(pageRanges ? { pageRanges } : {}) })
   } finally {
     await browser.close()
   }
@@ -140,7 +140,7 @@ const CANVAS_SETTLE_MS = 5000
  *  WebGL1, so no context at all means no fallback either); no amount of
  *  extra waiting fixes that case, and a genuinely different approach
  *  (e.g. a static tile-image fallback) would be needed. */
-export async function renderHtmlDeckPdf(env: Env, rawHtml: string): Promise<Buffer> {
+export async function renderHtmlDeckPdf(env: Env, rawHtml: string, pageRanges?: string): Promise<Buffer> {
   const browser = await puppeteer.launch(env.BROWSER)
   try {
     const page = await browser.newPage()
@@ -153,6 +153,7 @@ export async function renderHtmlDeckPdf(env: Env, rawHtml: string): Promise<Buff
       format: 'A4',
       printBackground: true,
       preferCSSPageSize: true,
+      ...(pageRanges ? { pageRanges } : {}),
       margin: {
         top: HTML_DECK_PDF_MARGIN,
         bottom: HTML_DECK_PDF_MARGIN,

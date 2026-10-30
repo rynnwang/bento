@@ -306,6 +306,7 @@ Current feature set, all owner-only except where noted:
   build a `Blob`/`URL.createObjectURL` download on success and restore the
   button after a short delay either way (success or failure) so a repeat
   click always works.
+- **PDF page selection (2026-10-30)** — `GET /d/:id/pdf?pages=1-3,5` (print-dialog syntax, `7-` = to the end) renders only those pages via Chromium `pageRanges` (`pdfPages.ts` normalises; one R2 cache entry per distinct range under `pdf/<id>/`; each new range costs one browser render). The html/md wrapper has a ▾ beside Download PDF opening an All / Pages panel; slides-zone buttons still download everything. Rationale: `docs/DECISIONS.md` 2026-10-30.
 - **`kind:'md'` decks (2026-09-25)** — a Markdown file: `POST /api/decks`
   `{ md }`, raw source stored at `docs/<id>/doc.md` and rendered to HTML at
   VIEW time by `platform/worker/src/markdown.ts` (never stored, so a

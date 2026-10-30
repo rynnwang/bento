@@ -11264,3 +11264,26 @@ styles.** Implementation (`textedit.ts`, `textEditClient.ts`, `PATCH
   The edit bumps `updated_at`, so the cached PDF regenerates.
 - Non-goals: adding/removing/moving blocks, colours, images, table structure,
   editing JS-generated text, rich paste (paste is forced to plain text).
+
+## 2026-10-30 — PDF download: choose pages (`?pages=`), rendered by Chromium, cached per range
+
+`GET /d/:id/pdf?pages=1-3,5` returns only those pages (print-dialog syntax:
+singles, spans, `7-` = to the end; empty/`all` = everything). Implemented by
+passing `pageRanges` to Chromium (`pdf.ts`) rather than slicing the finished PDF:
+pdf-lib was the alternative, rejected because parsing a multi-MB PDF in a Worker
+risks the free plan's ~10 ms CPU limit, and it adds a dependency. The cost is one
+browser render per DISTINCT range (free tier: 10 browser-min/day), softened by:
+- `pdfPages.ts` normalises ranges (sorted, merged, whitespace/CJK separators) so
+  "3, 1-2" and "1-3" share one cache entry; ranged renders cache at
+  `pdf/<id>/<range>.pdf` with the same updated_at + render-version check as the
+  full file, and `deleteDeck` now sweeps both (the full cached PDF was previously
+  never deleted either).
+- Bad syntax → 400 before any render; a range starting past the last page →
+  400 (Chromium refuses it); an end beyond the last page is clamped by Chromium.
+- The full render stores its page count (`customMetadata.pages`, counted by a byte
+  scan, not a regex, for CPU) and answers with `x-pdf-pages`, which the page uses to
+  say "This document has N pages". Ranged responses carry no total.
+- Filename gets a `-p1-3_5` tag. Works for all three deck kinds server-side; the
+  UI (a ▾ beside "Download PDF" opening an All/Pages panel) exists in the html/md
+  wrapper only — the slides player/editor buttons live in slides/ (other zone)
+  and still download everything.
