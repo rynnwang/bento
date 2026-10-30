@@ -137,6 +137,7 @@ import { renderDeckPasswordGate } from './sharePage.ts'
 import { renderBentoDeckPdf, renderHtmlDeckPdf, PDF_RENDER_VERSION } from './pdf.ts'
 import { renderMdPage, extractMdTitle } from './markdown.ts'
 import { clipUrl, ClipError } from './webclip.ts'
+import { normalizePageRange, toChromiumRange, rangeFileTag, countPdfPages, PageRangeError } from './pdfPages.ts'
 import { applyHtmlTextEdit, applyMdTextEdit, EditError } from './textedit.ts'
 import { TEXT_EDIT_CSS, TEXT_EDIT_SCRIPT } from './textEditClient.ts'
 import { aiCleanClip } from './clipclean.ts'
@@ -259,11 +260,24 @@ function htmlDeckWrapper(rawHtml: string, title: string, id: string, edit?: { ve
 <style>
 html,body{margin:0;height:100%;background:#0D1B2E}
 iframe{border:0;width:100vw;height:100vh;display:block}
-#bento-pdf-btn{position:fixed;top:14px;right:14px;z-index:10;padding:8px 14px;border:1px solid rgb(255 255 255 / 0.25);
+#bento-pdf-bar{position:fixed;top:14px;right:14px;z-index:10;display:flex;align-items:stretch;border:1px solid rgb(255 255 255 / 0.25);
   border-radius:999px;background:rgb(13 27 46 / 0.55);backdrop-filter:blur(6px);color:#fff;font:13px/1 -apple-system,
-  BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;cursor:pointer;text-decoration:none;display:inline-block}
-#bento-pdf-btn:hover{background:rgb(13 27 46 / 0.8)}
-#bento-pdf-btn[aria-busy="true"]{cursor:default;pointer-events:none}
+  BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif}
+#bento-pdf-bar:hover{background:rgb(13 27 46 / 0.8)}
+#bento-pdf-btn,#bento-pdf-opt{color:inherit;font:inherit;cursor:pointer;text-decoration:none;display:inline-block;background:none;border:0;padding:8px 12px}
+#bento-pdf-btn{border-radius:999px 0 0 999px;padding-left:14px}
+#bento-pdf-opt{border-left:1px solid rgb(255 255 255 / 0.2);border-radius:0 999px 999px 0;padding-right:11px}
+#bento-pdf-bar[aria-busy="true"] #bento-pdf-btn,#bento-pdf-bar[aria-busy="true"] #bento-pdf-opt{cursor:default;pointer-events:none}
+#bento-pdf-panel{position:fixed;top:56px;right:14px;z-index:12;width:262px;box-sizing:border-box;padding:12px 14px;border-radius:12px;
+  background:rgb(13 27 46 / 0.96);color:#fff;border:1px solid rgb(255 255 255 / 0.2);box-shadow:0 8px 28px rgb(0 0 0 / .35);
+  font:13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif}
+#bento-pdf-panel[hidden]{display:none}
+#bento-pdf-panel label{display:flex;align-items:center;gap:8px;margin:6px 0;cursor:pointer}
+#bento-pdf-panel input[type=text]{flex:1;min-width:0;padding:6px 8px;border-radius:6px;border:1px solid rgb(255 255 255 / .3);background:rgb(255 255 255 / .08);color:#fff;font:inherit}
+#bento-pdf-panel .hint{opacity:.7;font-size:12px;margin:2px 0 8px}
+#bento-pdf-panel .err{color:#ff9d92;font-size:12px;margin:4px 0 8px}
+#bento-pdf-go{width:100%;padding:8px;border-radius:8px;border:0;background:#ED8266;color:#fff;font:inherit;font-weight:600;cursor:pointer}
+#bento-pdf-go:disabled{opacity:.6;cursor:default}
 #bento-pdf-spin{display:inline-block;width:11px;height:11px;margin-right:6px;vertical-align:-1px;
   border:2px solid currentColor;border-right-color:transparent;border-radius:50%;opacity:.85;
   animation:bento-pdf-spin .7s linear infinite}
@@ -272,20 +286,48 @@ ${edit ? TEXT_EDIT_CSS : ''}
 </style>
 </head><body>
 <iframe id="bento-html-frame" sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals" srcdoc="${srcdocEscaped}"></iframe>
-<a id="bento-pdf-btn" href="/d/${id}/pdf">⬇ Download PDF</a>
+<div id="bento-pdf-bar"><a id="bento-pdf-btn" href="/d/${id}/pdf">⬇ Download PDF</a><button id="bento-pdf-opt" type="button" aria-label="Choose pages" aria-expanded="false" title="Choose pages">▾</button></div>
+<div id="bento-pdf-panel" hidden>
+  <label><input type="radio" name="bento-pdf-scope" value="all" checked> All pages</label>
+  <label><input type="radio" name="bento-pdf-scope" value="range"> Pages <input type="text" id="bento-pdf-range" placeholder="e.g. 1-3, 5" autocomplete="off" spellcheck="false"></label>
+  <div class="hint" id="bento-pdf-hint">Same as a print dialog: 1-3, 5, 7- (7 to the end)</div>
+  <div class="err" id="bento-pdf-err" hidden></div>
+  <button id="bento-pdf-go" type="button">Download</button>
+</div>
 ${edit ? `<button id="bento-edit-btn" type="button" data-id="${id}" data-v="${edit.version}" aria-pressed="false">✎ Edit text</button>` : ''}
 <script>
 (function () {
+  var bar = document.getElementById('bento-pdf-bar')
   var btn = document.getElementById('bento-pdf-btn')
+  var opt = document.getElementById('bento-pdf-opt')
+  var panel = document.getElementById('bento-pdf-panel')
+  var go = document.getElementById('bento-pdf-go')
+  var rangeInput = document.getElementById('bento-pdf-range')
+  var errEl = document.getElementById('bento-pdf-err')
+  var hint = document.getElementById('bento-pdf-hint')
   var original = btn.innerHTML
-  btn.addEventListener('click', function (ev) {
-    ev.preventDefault()
-    if (btn.getAttribute('aria-busy') === 'true') return
-    btn.setAttribute('aria-busy', 'true')
+  var baseHref = btn.getAttribute('href')
+
+  function showErr(msg) { errEl.textContent = msg || ''; errEl.hidden = !msg }
+  function setPanel(open) { panel.hidden = !open; opt.setAttribute('aria-expanded', open ? 'true' : 'false'); if (open) showErr('') }
+  opt.addEventListener('click', function () { setPanel(panel.hidden) })
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') setPanel(false) })
+  rangeInput.addEventListener('focus', function () { document.querySelector('input[value=range]').checked = true })
+
+  function download(href, fromPanel) {
+    if (bar.getAttribute('aria-busy') === 'true') return
+    bar.setAttribute('aria-busy', 'true')
     btn.innerHTML = '<span id="bento-pdf-spin"></span>Requesting…'
-    fetch(btn.getAttribute('href'))
+    go.disabled = true
+    showErr('')
+    fetch(href)
       .then(function (res) {
-        if (!res.ok) throw new Error('HTTP ' + res.status)
+        if (!res.ok) {
+          return res.json().then(
+            function (j) { throw new Error(j && j.error ? j.error : 'HTTP ' + res.status) },
+            function () { throw new Error('HTTP ' + res.status) }
+          )
+        }
         return res.blob().then(function (blob) { return { blob: blob, res: res } })
       })
       .then(function (r) {
@@ -294,6 +336,8 @@ ${edit ? `<button id="bento-edit-btn" type="button" data-id="${id}" data-v="${ed
         var match = /filename="([^"]+)"/.exec(disposition)
         var filename = (match && match[1]) || 'deck.pdf'
         try { if (star) filename = decodeURIComponent(star[1]) } catch (e) {}
+        var n = r.res.headers.get('x-pdf-pages')
+        if (n) hint.textContent = 'This document has ' + n + ' pages. Same syntax as a print dialog: 1-3, 5, 7-'
         var objectUrl = URL.createObjectURL(r.blob)
         var a = document.createElement('a')
         a.href = objectUrl
@@ -303,18 +347,30 @@ ${edit ? `<button id="bento-edit-btn" type="button" data-id="${id}" data-v="${ed
         a.remove()
         URL.revokeObjectURL(objectUrl)
         btn.innerHTML = 'Downloaded ✓'
+        if (fromPanel) setPanel(false)
       })
       .catch(function (e) {
         console.error(e)
         btn.innerHTML = 'Download failed'
+        if (fromPanel || !panel.hidden) { setPanel(true); showErr(e && e.message ? e.message : 'Download failed') }
       })
       .then(function () {
         setTimeout(function () {
-          btn.removeAttribute('aria-busy')
+          bar.removeAttribute('aria-busy')
+          go.disabled = false
           btn.innerHTML = original
         }, 1500)
       })
+  }
+
+  btn.addEventListener('click', function (ev) { ev.preventDefault(); download(baseHref, false) })
+  go.addEventListener('click', function () {
+    var scope = document.querySelector('input[name=bento-pdf-scope]:checked').value
+    var text = rangeInput.value.trim()
+    if (scope === 'range' && !text) { showErr('Enter the pages to include, e.g. 1-3, 5'); rangeInput.focus(); return }
+    download(scope === 'range' ? baseHref + '?pages=' + encodeURIComponent(text) : baseHref, true)
   })
+  rangeInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') go.click() })
 })()
 <\/script>
 ${edit ? `<script>${TEXT_EDIT_SCRIPT}<\/script>` : ''}
@@ -950,13 +1006,14 @@ async function handleView(req: Request, env: Env, id: string, download: boolean)
  *  "now": the PDF is cached per `updated_at`, so a repeat download of an unchanged
  *  deck gets the identical name. The title keeps its Unicode via `filename*`; the
  *  plain `filename` is an ASCII fallback (header values must be latin1). */
-function pdfContentDisposition(title: string, updatedAt: number): string {
+function pdfContentDisposition(title: string, updatedAt: number, rangeTag = ''): string {
   const d = new Date(updatedAt)
   const p = (n: number) => String(n).padStart(2, '0')
   const stamp = `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}-${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}`
   const base = title.replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) || 'deck'
   const ascii = base.replace(/[^\x20-\x7e]+/g, '_').replace(/[%"\\]/g, '_')
-  return `attachment; filename="${ascii}-${stamp}.pdf"; filename*=UTF-8''${encodeURIComponent(`${base}-${stamp}.pdf`)}`
+  const tail = rangeTag ? `-${rangeTag}` : ''
+  return `attachment; filename="${ascii}-${stamp}${tail}.pdf"; filename*=UTF-8''${encodeURIComponent(`${base}-${stamp}${tail}.pdf`)}`
 }
 
 async function handlePdf(req: Request, env: Env, id: string): Promise<Response> {
@@ -965,33 +1022,55 @@ async function handlePdf(req: Request, env: Env, id: string): Promise<Response> 
   if (!owner && meta.access === 'private') return notFound()
   if (!owner && !(await isDeckUnlocked(req, meta))) return html(renderDeckPasswordGate(id, 'pdf'))
 
-  const pdfHeaders: HeadersInit = {
+  // ?pages=1-3,5 — same syntax as a print dialog; absent/empty/"all" = everything.
+  let range: string | null
+  try {
+    range = normalizePageRange(new URL(req.url).searchParams.get('pages'))
+  } catch (e) {
+    if (e instanceof PageRangeError) return json({ error: e.message }, { status: 400 })
+    throw e
+  }
+  const variant = range ?? ''
+  const headersFor = (pages: number | null): HeadersInit => ({
     'content-type': 'application/pdf',
-    'content-disposition': pdfContentDisposition(meta.title, meta.updated_at),
-  }
+    'content-disposition': pdfContentDisposition(meta.title, meta.updated_at, range ? rangeFileTag(range) : ''),
+    // lets the page's download panel say "of N pages" (known once the whole document has been rendered)
+    ...(pages && !range ? { 'x-pdf-pages': String(pages) } : {}),
+    'access-control-expose-headers': 'x-pdf-pages, content-disposition',
+  })
 
-  const cached = await getCachedPdf(env, id, meta.updated_at, PDF_RENDER_VERSION)
-  if (cached) return new Response(cached, { headers: pdfHeaders })
+  const cached = await getCachedPdf(env, id, meta.updated_at, PDF_RENDER_VERSION, variant)
+  if (cached) return new Response(cached.bytes, { headers: headersFor(cached.pages) })
 
+  const chromiumRange = range ? toChromiumRange(range) : undefined
   let bytes: ArrayBuffer
-  if (meta.kind === 'html') {
-    const rawHtml = await getDeckHtml(env, id)
-    if (rawHtml === null) return notFound()
-    bytes = await renderHtmlDeckPdf(env, rawHtml)
-  } else if (meta.kind === 'md') {
-    const md = await getDeckMd(env, id)
-    if (md === null) return notFound()
-    // The rendered page carries its own print stylesheet (markdown.ts's
-    // PAGE_CSS) — same standard-pagination path any 'html' deck gets.
-    bytes = await renderHtmlDeckPdf(env, renderMdPage(md))
-  } else {
-    // The deck's OWN live URL — whatever a real viewer would see (editor or
-    // player mode, per `access`) is exactly what gets rendered.
-    const origin = new URL(req.url).origin
-    bytes = await renderBentoDeckPdf(env, `${origin}/d/${id}`)
+  try {
+    if (meta.kind === 'html') {
+      const rawHtml = await getDeckHtml(env, id)
+      if (rawHtml === null) return notFound()
+      bytes = await renderHtmlDeckPdf(env, rawHtml, chromiumRange)
+    } else if (meta.kind === 'md') {
+      const md = await getDeckMd(env, id)
+      if (md === null) return notFound()
+      // The rendered page carries its own print stylesheet (markdown.ts's
+      // PAGE_CSS) — same standard-pagination path any 'html' deck gets.
+      bytes = await renderHtmlDeckPdf(env, renderMdPage(md), chromiumRange)
+    } else {
+      // The deck's OWN live URL — whatever a real viewer would see (editor or
+      // player mode, per `access`) is exactly what gets rendered.
+      const origin = new URL(req.url).origin
+      bytes = await renderBentoDeckPdf(env, `${origin}/d/${id}`, chromiumRange)
+    }
+  } catch (e) {
+    // Chromium rejects a range that starts past the last page; say so plainly.
+    if (range && /page range/i.test(String((e as Error)?.message))) {
+      return json({ error: `That range starts after the last page of this document.` }, { status: 400 })
+    }
+    throw e
   }
-  await putCachedPdf(env, id, meta.updated_at, PDF_RENDER_VERSION, bytes)
-  return new Response(bytes, { headers: pdfHeaders })
+  const pages = countPdfPages(bytes)
+  await putCachedPdf(env, id, meta.updated_at, PDF_RENDER_VERSION, bytes, variant, range ? null : pages)
+  return new Response(bytes, { headers: headersFor(range ? null : pages) })
 }
 
 async function handleAsset(req: Request, env: Env, id: string, key: string): Promise<Response> {

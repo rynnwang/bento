@@ -10,7 +10,7 @@
 // of backticks and dollar-brace sequences.
 
 export const TEXT_EDIT_CSS = String.raw`
-#bento-edit-btn{position:fixed;top:14px;right:150px;z-index:10;padding:8px 14px;border:1px solid rgb(255 255 255 / 0.25);
+#bento-edit-btn{position:fixed;top:14px;right:200px;z-index:10;padding:8px 14px;border:1px solid rgb(255 255 255 / 0.25);
   border-radius:999px;background:rgb(13 27 46 / 0.55);backdrop-filter:blur(6px);color:#fff;font:13px/1 -apple-system,
   BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;cursor:pointer}
 #bento-edit-btn:hover{background:rgb(13 27 46 / 0.8)}

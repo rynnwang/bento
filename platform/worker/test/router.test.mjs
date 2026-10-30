@@ -533,6 +533,48 @@ await check('GET /d/:id/pdf serves a cached render directly, without touching Br
   assert(text === '%PDF-1.7 fake cached bytes', 'expected the exact cached bytes back, not a fresh render')
 })
 
+await check('GET /d/:id/pdf?pages= — ranges normalise to one cache key, tag the filename, and bad ranges are a 400 (no render)', async () => {
+  const meta = (await readBody(await worker.fetch(new Request('https://platform.example/api/decks', { headers: { cookie: ownerCookie } }), env))).data.decks.find((d) => d.id === pdfCacheDeckId)
+  const seed = (key, text, extra = {}) =>
+    env.DOCS._objects.set(key, {
+      bytes: new TextEncoder().encode(text),
+      httpMetadata: { contentType: 'application/pdf' },
+      customMetadata: { updatedAt: String(meta.updatedAt), renderVersion: CURRENT_PDF_RENDER_VERSION, ...extra },
+    })
+  seed(`pdf/${pdfCacheDeckId}/1-3,5.pdf`, '%PDF ranged')
+  seed(`pdf/${pdfCacheDeckId}.pdf`, '%PDF full', { pages: '7' })
+  const get = (q) => worker.fetch(new Request(`https://platform.example/d/${pdfCacheDeckId}/pdf${q}`), env)
+
+  for (const q of ['?pages=1-3,5', '?pages=5, 3,1-2', '?pages=1-3%2C5']) {
+    const r = await get(q)
+    const { text } = await readBody(r)
+    assert(r.status === 200 && text === '%PDF ranged', `${q}: expected the ranged cache entry, got ${r.status} ${text}`)
+    const cd = r.headers.get('content-disposition') ?? ''
+    assert(/-p1-3_5\.pdf"/.test(cd) && /-p1-3_5\.pdf$/.test(cd), `${q}: filename should carry the range tag, got ${cd}`)
+    assert(!r.headers.get('x-pdf-pages'), 'ranged responses do not claim a total page count')
+  }
+  const full = await get('?pages=all')
+  assert((await readBody(full)).text === '%PDF full' && full.headers.get('x-pdf-pages') === '7', 'pages=all is the whole document and reports the page count')
+  const plain = await get('')
+  assert(plain.headers.get('x-pdf-pages') === '7' && !/-p\d/.test(plain.headers.get('content-disposition') ?? ''), 'no range → plain filename + page count')
+  for (const bad of ['abc', '0', '3-1', '1-3-5', '%3Cscript%3E']) {
+    const r = await get(`?pages=${bad}`)
+    assert(r.status === 400, `?pages=${bad}: expected 400, got ${r.status}`)
+  }
+  const miss = await get('?pages=9')
+  assert(miss.status === 500, `an uncached range falls through to a (failing here) render, got ${miss.status}`)
+})
+
+await check('deleting a deck also removes its cached PDFs (full and ranged)', async () => {
+  const created = await readBody(await worker.fetch(new Request('https://platform.example/api/decks', { method: 'POST', headers: { 'content-type': 'application/json', cookie: ownerCookie }, body: JSON.stringify({ md: '# pdf sweep\n\ntext\n' }) }), env))
+  const id = created.data.id
+  for (const k of [`pdf/${id}.pdf`, `pdf/${id}/2-4.pdf`, `pdf/${id}/1.pdf`]) env.DOCS._objects.set(k, { bytes: new Uint8Array([1]), httpMetadata: {}, customMetadata: {} })
+  const del = await worker.fetch(new Request(`https://platform.example/api/decks/${id}`, { method: 'DELETE', headers: { cookie: ownerCookie } }), env)
+  assert(del.status === 200, `delete: ${del.status}`)
+  const left = [...env.DOCS._objects.keys()].filter((k) => k.includes(id))
+  assert(left.length === 0, `leftover objects: ${left.join(', ')}`)
+})
+
 await check('GET /d/:id/pdf ignores a cache entry from an OLDER render version, even with a matching updated_at', async () => {
   // Simulates exactly the bug this version bump exists to prevent: a
   // rendering-logic fix ships, but the deck's own content (and so its
