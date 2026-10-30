@@ -119,7 +119,6 @@ export const TEXT_EDIT_SCRIPT = String.raw`
     el.setAttribute('data-bento-editing', '')
     try { d.execCommand('styleWithCSS', false, false) } catch (e) {}
     el.focus()
-    el.addEventListener('keydown', onKey)
     el.addEventListener('paste', onPaste)
     el.addEventListener('drop', stop)
     el.addEventListener('beforeinput', onBefore)
@@ -127,13 +126,56 @@ export const TEXT_EDIT_SCRIPT = String.raw`
     hint.hidden = false
   }
 
-  function onKey(e) {
+  function handleKey(e) {
     if (e.key === 'Escape') { e.preventDefault(); finish(false); return }
     if (e.key === 'Enter') {
       e.preventDefault()
       if (e.ctrlKey || e.metaKey) { finish(true); return }
       doc().execCommand('insertLineBreak')
     }
+  }
+
+  // ---- keep the DECK's own handlers out of the way. A slide deck listens for
+  // arrows / space / PageUp-Down / digits, wheel and swipes, and click-to-advance.
+  // While text is being edited none of that may fire; in edit mode the first click
+  // of a double-click on text must not flip the slide before the dblclick lands.
+  // These run in the CAPTURE phase on the deck's document and stop propagation
+  // (never preventDefault, so typing, caret moves, selection, scrolling and
+  // Ctrl/Cmd+B/I still do what the browser does). A deck that registers its own
+  // capture listener on window earlier than us can't be pre-empted — rare.
+  var swallowClick = false
+  var swallowTimer = 0
+  function onKeyIsolate(e) {
+    if (!editing) return
+    if (e.type === 'keydown') handleKey(e)
+    e.stopPropagation()
+  }
+  function onMotionIsolate(e) {
+    if (editing) e.stopPropagation()
+  }
+  function onPointerIsolate(e) {
+    var t = e.target
+    if (editing) {
+      if (editing.el.contains(t)) { e.stopPropagation(); return }
+      // a press outside ends the edit via blur; the click that follows must not reach the deck either
+      swallowClick = true
+      clearTimeout(swallowTimer)
+      swallowTimer = setTimeout(function () { swallowClick = false }, 500)
+      e.stopPropagation()
+      return
+    }
+    if (e.type === 'click' && swallowClick) { swallowClick = false; e.stopPropagation(); return }
+    // edit mode, nothing being edited: presses on text we could edit belong to us, not the deck
+    if (on && pick(t)) e.stopPropagation()
+  }
+  var KEY_EVENTS = ['keydown', 'keyup', 'keypress']
+  var MOTION_EVENTS = ['wheel', 'touchmove']
+  var POINTER_EVENTS = ['mousedown', 'mouseup', 'pointerdown', 'pointerup', 'touchstart', 'touchend', 'click']
+  function isolation(d, add) {
+    var m = add ? 'addEventListener' : 'removeEventListener'
+    KEY_EVENTS.forEach(function (n) { d[m](n, onKeyIsolate, true) })
+    MOTION_EVENTS.forEach(function (n) { d[m](n, onMotionIsolate, true) })
+    POINTER_EVENTS.forEach(function (n) { d[m](n, onPointerIsolate, true) })
   }
   function onPaste(e) {
     e.preventDefault()
@@ -149,7 +191,6 @@ export const TEXT_EDIT_SCRIPT = String.raw`
     if (!e) return
     editing = null
     var el = e.el
-    el.removeEventListener('keydown', onKey)
     el.removeEventListener('paste', onPaste)
     el.removeEventListener('drop', stop)
     el.removeEventListener('beforeinput', onBefore)
@@ -215,6 +256,7 @@ export const TEXT_EDIT_SCRIPT = String.raw`
     d.addEventListener('mouseover', onOver, true)
     d.addEventListener('dblclick', onDbl, true)
     d.addEventListener('click', onClick, true)
+    isolation(d, true)
     return true
   }
   function disable() {
@@ -225,6 +267,7 @@ export const TEXT_EDIT_SCRIPT = String.raw`
     d.removeEventListener('mouseover', onOver, true)
     d.removeEventListener('dblclick', onDbl, true)
     d.removeEventListener('click', onClick, true)
+    isolation(d, false)
     var st = d.getElementById(STYLE_ID)
     if (st) st.remove()
   }
