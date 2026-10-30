@@ -11287,3 +11287,20 @@ browser render per DISTINCT range (free tier: 10 browser-min/day), softened by:
   UI (a ▾ beside "Download PDF" opening an All/Pages panel) exists in the html/md
   wrapper only — the slides player/editor buttons live in slides/ (other zone)
   and still download everything.
+
+## 2026-10-30 — HTML-deck PDF: lay out at the deck's own `@page` size, not A4 (render v5)
+
+Symptom: a real 50-slide deck (`@media print{@page{size:1280px 720px;margin:0}}`,
+desktop layout behind `@media (min-width:900px)`) downloaded as a PDF in its PHONE
+layout — single column, scaled up, bottom of every slide clipped. Cause: Chromium
+lays the document out against the paper size passed to `page.pdf()`;
+`preferCSSPageSize` only swaps the paper afterwards. We passed `format:'A4'` (794
+CSS px), below the deck's 900px breakpoint. Verified by rasterising both variants
+of the same page with the same Chrome. Fix (`pdfPageCss.ts`, `renderHtmlDeckPdf`):
+read the deck's own `@page` rules; a two-length `size` (px/in/mm/cm/pt, sanity-
+bounded) is passed as explicit `width`/`height`, and a deck that sets its own
+`@page` margin keeps it (the 20mm default applies only otherwise). Decks without a
+two-length `size` (none, keywords like `A4 landscape`) behave exactly as before.
+`PDF_RENDER_VERSION` → 5 so cached PDFs regenerate. The first-ever selection
+(`?pages=`) bug report that led here was NOT caused by page ranges — the full PDF
+had the same layout problem; it just wasn't noticed until pages were inspected.

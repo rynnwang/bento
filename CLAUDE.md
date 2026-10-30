@@ -279,7 +279,7 @@ Current feature set, all owner-only except where noted:
   test end-to-end from a session; if still blank, the next thing to check
   is whether that Chromium can create a WebGL2 context at all (MapLibre v6
   has no WebGL1 fallback), which no amount of waiting would fix.
-  `PDF_RENDER_VERSION` (`pdf.ts`, now 4) is folded into the R2 cache key
+  `PDF_RENDER_VERSION` (`pdf.ts`, now 5 — v5 lays an `html` deck out at its own declared `@page` size via `pdfPageCss.ts` instead of A4, so a deck's desktop `min-width` layout applies; `docs/DECISIONS.md` 2026-10-30) is folded into the R2 cache key
   alongside `updated_at` specifically so a rendering-logic fix like any of
   these can never keep being served from a stale cache entry. Both the editor
   topbar button and the player card check a new host-capability
