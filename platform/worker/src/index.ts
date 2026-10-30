@@ -1066,7 +1066,20 @@ async function handlePdf(req: Request, env: Env, id: string): Promise<Response> 
     if (range && /page range/i.test(String((e as Error)?.message))) {
       return json({ error: `That range starts after the last page of this document.` }, { status: 400 })
     }
-    throw e
+    // Anything else from the renderer (Browser Rendering quota/concurrency,
+    // navigation timeout, a crashed session) used to surface as a bare
+    // "internal error". Log the real cause and tell the viewer what it was.
+    console.error('pdf render failed', id, range ?? 'all', e)
+    const raw = String((e as Error)?.message ?? e).replace(/\s+/g, ' ').slice(0, 160)
+    const limited = /429|limit|too many|rate|quota|exceeded/i.test(raw)
+    return json(
+      {
+        error: limited
+          ? 'PDF rendering is temporarily unavailable (the browser-rendering limit was reached). Try again in a few minutes.'
+          : `PDF rendering failed: ${raw}`,
+      },
+      { status: 503 },
+    )
   }
   const pages = countPdfPages(bytes)
   await putCachedPdf(env, id, meta.updated_at, PDF_RENDER_VERSION, bytes, variant, range ? null : pages)

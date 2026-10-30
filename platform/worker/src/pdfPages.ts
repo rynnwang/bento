@@ -50,21 +50,24 @@ export const toChromiumRange = (canonical: string): string => canonical.replace(
 /** File-name-safe tag for a canonical range: "1-3,5" -> "p1-3_5". */
 export const rangeFileTag = (canonical: string): string => `p${canonical.replace(/,/g, '_')}`
 
-/** Count pages of a Chromium-produced PDF by scanning for `/Type /Page`
- *  (not `/Pages`). Byte scan, not a string regex: this runs inside a Worker
- *  request whose CPU budget is small. Returns null if nothing matched. */
-export function countPdfPages(bytes: ArrayBuffer): number | null {
-  const u = new Uint8Array(bytes)
-  const needle = [0x2f, 0x54, 0x79, 0x70, 0x65] // "/Type"
-  let n = 0
-  for (let i = 0; i + 12 < u.length; i++) {
-    if (u[i] !== 0x2f) continue
-    let j = 1
-    for (; j < 5; j++) if (u[i + j] !== needle[j]) break
-    if (j < 5) continue
-    let k = i + 5
-    while (u[k] === 0x20) k++
-    if (u[k] === 0x2f && u[k + 1] === 0x50 && u[k + 2] === 0x61 && u[k + 3] === 0x67 && u[k + 4] === 0x65 && u[k + 5] !== 0x73) n++
+/** Page count of a Chromium-produced PDF: the largest `/Count N` that follows a
+ *  `/Type /Pages` node (the root of the page tree always has the biggest).
+ *  Uses Buffer.indexOf — a native search — because this runs inside a Worker
+ *  request with a tiny CPU budget and the PDF can be many MB; a JS byte loop
+ *  over 8 MB is not free. Returns null when nothing usable is found, and never
+ *  throws: the count is a nicety, not worth failing a download for. */
+export function countPdfPages(bytes: ArrayBuffer | Uint8Array): number | null {
+  try {
+    const Buf = (globalThis as { Buffer?: typeof Buffer }).Buffer
+    if (!Buf) return null
+    const buf = bytes instanceof Uint8Array ? Buf.from(bytes.buffer, bytes.byteOffset, bytes.byteLength) : Buf.from(bytes)
+    let best = 0
+    for (let at = buf.indexOf('/Type /Pages'); at >= 0 && at < buf.length; at = buf.indexOf('/Type /Pages', at + 12)) {
+      const m = /\/Count\s+(\d+)/.exec(buf.toString('latin1', at, Math.min(buf.length, at + 80)))
+      if (m) best = Math.max(best, Number(m[1]))
+    }
+    return best > 0 ? best : null
+  } catch {
+    return null
   }
-  return n || null
 }
