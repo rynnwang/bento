@@ -19,6 +19,7 @@
 // getCachedPdf/putCachedPdf) keyed to the deck's own `updated_at`. A repeat
 // download of an unchanged deck never touches the browser at all.
 import puppeteer from '@cloudflare/puppeteer'
+import { readPageSetup } from './pdfPageCss.ts'
 import type { Env } from './env.ts'
 
 const VIEWPORT_WIDTH = 1280 // matches slides/'s own 16:9 default deck width
@@ -37,8 +38,10 @@ const VIEWPORT_WIDTH = 1280 // matches slides/'s own 16:9 default deck width
  *  not assumed — docs/DECISIONS.md 2026-09-23 second entry). v3 sets an
  *  explicit default margin. v4 gives a canvas-containing 'html' deck (an
  *  interactive map, say) extra time to actually PAINT before the snapshot
- *  — see CANVAS_SETTLE_MS. */
-export const PDF_RENDER_VERSION = 4
+ *  — see CANVAS_SETTLE_MS. v5 lays a deck out at its own declared
+ *  `@page` size (and keeps its own @page margin) instead of A4 — see
+ *  pdfPageCss.ts. */
+export const PDF_RENDER_VERSION = 5
 
 /** Render an already-live 'bento' deck (navigated to its own `/d/:id` — the
  *  URL a real viewer would open, so editor-vs-player mode and access level
@@ -149,17 +152,26 @@ export async function renderHtmlDeckPdf(env: Env, rawHtml: string, pageRanges?: 
     if (await page.evaluate('document.querySelectorAll("canvas").length > 0')) {
       await new Promise((resolve) => setTimeout(resolve, CANVAS_SETTLE_MS))
     }
+    // A deck with its own `@page { size: W H }` must be laid out at THAT width
+    // from the start (see pdfPageCss.ts) — not at A4 and rescaled afterwards.
+    const setup = readPageSetup(rawHtml)
+    const paper = setup.width && setup.height ? { width: `${setup.width}px`, height: `${setup.height}px` } : { format: 'A4' as const }
     return await page.pdf({
-      format: 'A4',
+      ...paper,
       printBackground: true,
       preferCSSPageSize: true,
       ...(pageRanges ? { pageRanges } : {}),
-      margin: {
-        top: HTML_DECK_PDF_MARGIN,
-        bottom: HTML_DECK_PDF_MARGIN,
-        left: HTML_DECK_PDF_MARGIN,
-        right: HTML_DECK_PDF_MARGIN,
-      },
+      // a deck that sets its own @page margin keeps it; otherwise the default
+      ...(setup.ownMargin
+        ? {}
+        : {
+            margin: {
+              top: HTML_DECK_PDF_MARGIN,
+              bottom: HTML_DECK_PDF_MARGIN,
+              left: HTML_DECK_PDF_MARGIN,
+              right: HTML_DECK_PDF_MARGIN,
+            },
+          }),
     })
   } finally {
     await browser.close()
