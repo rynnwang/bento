@@ -562,7 +562,7 @@ await check('GET /d/:id/pdf?pages= — ranges normalise to one cache key, tag th
     assert(r.status === 400, `?pages=${bad}: expected 400, got ${r.status}`)
   }
   const miss = await get('?pages=9')
-  assert(miss.status === 500, `an uncached range falls through to a (failing here) render, got ${miss.status}`)
+  assert(miss.status === 503, `an uncached range falls through to a (failing here) render, got ${miss.status}`)
 })
 
 await check('deleting a deck also removes its cached PDFs (full and ranged)', async () => {
@@ -591,7 +591,7 @@ await check('GET /d/:id/pdf ignores a cache entry from an OLDER render version, 
     customMetadata: { updatedAt: String(meta.updatedAt), renderVersion: '1' }, // deliberately not CURRENT_PDF_RENDER_VERSION
   })
   const res = await worker.fetch(new Request(`https://platform.example/d/${pdfCacheDeckId}/pdf`), env)
-  assert(res.status === 500, `expected the version-stale cache to be rejected and fall through to a (failing, in this harness) render attempt — got ${res.status}`)
+  assert(res.status === 503, `expected the version-stale cache to be rejected and fall through to a (failing, in this harness) render attempt — got ${res.status}`)
 })
 
 await check('GET /d/:id/pdf re-renders once the deck changes (a stale cache entry, by updated_at, must not be served)', async () => {
@@ -615,7 +615,7 @@ await check('GET /d/:id/pdf re-renders once the deck changes (a stale cache entr
   )
   assert(res.status === 200, `expected 200, got ${res.status}`)
   const pdfRes = await worker.fetch(new Request(`https://platform.example/d/${pdfCacheDeckId}/pdf`), env)
-  assert(pdfRes.status === 500, `expected the stale cache to be rejected and fall through to a (failing, in this harness) render attempt — got ${pdfRes.status}`)
+  assert(pdfRes.status === 503, `expected the stale cache to be rejected and fall through to a (failing, in this harness) render attempt — got ${pdfRes.status}`)
 })
 
 await check('GET /d/:id/download sets a Content-Disposition attachment header', async () => {
