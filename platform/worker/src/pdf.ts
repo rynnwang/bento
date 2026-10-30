@@ -22,6 +22,12 @@ import puppeteer from '@cloudflare/puppeteer'
 import { readPageSetup } from './pdfPageCss.ts'
 import type { Env } from './env.ts'
 
+/** Upper bound on waiting for the network to go quiet. Browser Rendering's free
+ *  tier is metered in browser-MINUTES, and a page that never fully idles (analytics,
+ *  a hung font host) would otherwise sit out the 30 s default on every render.
+ *  On timeout we render what is there — the content is already in the page. */
+const SETTLE_TIMEOUT_MS = 15_000
+
 const VIEWPORT_WIDTH = 1280 // matches slides/'s own 16:9 default deck width
 
 /** Bump whenever renderBentoDeckPdf/renderHtmlDeckPdf's actual OUTPUT
@@ -56,7 +62,7 @@ export async function renderBentoDeckPdf(env: Env, viewUrl: string, pageRanges?:
   try {
     const page = await browser.newPage()
     await page.setViewport({ width: VIEWPORT_WIDTH, height: 800 })
-    await page.goto(viewUrl, { waitUntil: 'networkidle0' })
+    await page.goto(viewUrl, { waitUntil: 'networkidle0', timeout: 25_000 })
     await page.waitForFunction('window.bento && typeof window.bento.preparePdf === "function"')
     await page.evaluate('window.bento.preparePdf()')
     await page.waitForSelector('#bento-print')
@@ -148,7 +154,11 @@ export async function renderHtmlDeckPdf(env: Env, rawHtml: string, pageRanges?: 
   try {
     const page = await browser.newPage()
     await page.setViewport({ width: VIEWPORT_WIDTH, height: 800 })
-    await page.setContent(rawHtml, { waitUntil: 'networkidle0' })
+    await page.setContent(rawHtml, { waitUntil: 'networkidle0', timeout: SETTLE_TIMEOUT_MS }).catch((e: unknown) => {
+      if (!/timeout/i.test(String((e as Error)?.message))) throw e
+    })
+    // web fonts decide line breaks, hence page breaks — give them a short, bounded chance
+    await Promise.race([page.evaluate('document.fonts && document.fonts.ready.then(() => true)'), new Promise((r) => setTimeout(r, 3000))]).catch(() => {})
     if (await page.evaluate('document.querySelectorAll("canvas").length > 0')) {
       await new Promise((resolve) => setTimeout(resolve, CANVAS_SETTLE_MS))
     }
