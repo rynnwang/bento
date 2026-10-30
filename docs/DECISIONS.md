@@ -11304,3 +11304,20 @@ two-length `size` (none, keywords like `A4 landscape`) behave exactly as before.
 `PDF_RENDER_VERSION` → 5 so cached PDFs regenerate. The first-ever selection
 (`?pages=`) bug report that led here was NOT caused by page ranges — the full PDF
 had the same layout problem; it just wasn't noticed until pages were inspected.
+
+## 2026-10-30 — Edit text: the deck's own keyboard/mouse/wheel/swipe handlers are paused while editing
+
+HTML decks are usually slide decks that listen for arrows, space, PageUp/Down, digits,
+wheel/swipe and click-to-advance. While a text element is being edited, those
+events must never reach the deck (typing a space or arrow would flip the slide), and
+in edit mode the first click of a double-click on text must not advance before the
+`dblclick` lands. `textEditClient.ts` therefore installs CAPTURE-phase listeners on the
+deck's document that `stopPropagation()` (never `preventDefault()`, so typing, caret
+moves, selection, scrolling and Ctrl/Cmd+B/I keep working): keys/wheel/touchmove while
+editing; presses inside the edited element; the press-and-click that ends an edit by
+clicking elsewhere (the trailing click is swallowed too); and, in edit mode with
+nothing being edited, presses on text that is editable (clicks on non-text areas still
+reach the deck, so click-to-advance / its own buttons keep working). Enter/Esc/Ctrl+Enter
+are handled inside that same capture handler since the element no longer sees keydown.
+Limit: a deck that registers its own capture listener on `window` before ours can't be
+pre-empted. Verified in a browser against a stub deck with counting handlers.
